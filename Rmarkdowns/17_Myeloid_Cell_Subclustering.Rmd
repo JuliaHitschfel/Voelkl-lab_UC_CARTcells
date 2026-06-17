@@ -1,0 +1,704 @@
+---
+title: "Myeloid_Cells_Subclustering"
+author: "Julia Hitschfel"
+date: "2026-01-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(SingleR)
+library(celldex)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D")
+```
+
+## Myeloid cells subclustering
+
+```{r Import data}
+scobject <- readRDS(file = "integrated_seurat_refined_annotations.rds")
+
+DimPlot(scobject, reduction = "umap", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "SCT_snn_res.0.4", label = T)
+
+# Monocytes are cluster 5, myeloid cells is cluster 12
+
+# Top marker in Cluster 5: TYROBP, AIF1, IFI30, C1QA, FCER1G, HLA class II, CD68, MS4A7, LYZ, MS4A6A, IL1B
+
+# Top marker in Cluster 12: CORO1A, HLA-DQA1, TMSB4X, PFN1, RPL and RPS transkripte, LCP1, CD52
+
+All_Myeloid_comb <- WhichCells(scobject, idents = c("Myeloid Cells_1", "Myeloid Cells_2"))
+
+FeaturePlot(scobject, features = "CD14", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "FCER1G", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "LYZ", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "IFI30", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "TYROBP", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "HLA-DPB1", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "CD68", slot = "counts", max.cutoff = 5)
+
+FeaturePlot(scobject, features = "CORO1A", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "HLA-DQA1", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "TMSB4X", slot = "counts", max.cutoff = 35)
+FeaturePlot(scobject, features = "LCP1", slot = "counts", max.cutoff = 5)
+FeaturePlot(scobject, features = "CD52", slot = "counts", max.cutoff = 5)
+```
+
+```{r Check filters}
+genes_to_filter <- c('FCER1G', 'LYZ', 'IFI30', 'HLA-DPB1')
+Non_Myeloid_Cells <- WhichCells(scobject, expression = FCER1G < 3 & LYZ < 3 & IFI30 < 2 &
+                                     `HLA-DPB1` < 3 & TYROBP < 2, slot = "counts")
+
+Non_Myeloid_Seurat <- subset(scobject, cells = Non_Myeloid_Cells)
+
+DimPlot(Non_Myeloid_Seurat, reduction = "umap")
+
+#Classical monocyte markers
+FeaturePlot(Non_Myeloid_Seurat, features = "CD14")
+FeaturePlot(Non_Myeloid_Seurat, features = "CD68")
+FeaturePlot(Non_Myeloid_Seurat, features = "FCGR1A")
+
+#Classical macrophage markers
+FeaturePlot(Non_Myeloid_Seurat, features = "ITGAM")
+FeaturePlot(Non_Myeloid_Seurat, features = "FCGR3A")
+FeaturePlot(Non_Myeloid_Seurat, features = "CCR5")
+```
+
+```{r Read in Data from myeloid cells}
+All.data <- list.dirs("D:/Sequencing_data/data/", recursive = F)
+
+list.10x <- list()
+counter <- 1
+for(i in All.data){
+  rnaseq.data <- Read10X_h5(paste0(i, "/count/sample_filtered_feature_bc_matrix.h5"))
+  all.cells <- CreateSeuratObject(counts = rnaseq.data, project = "Colitis", min.cells = 3, 
+                             min.features = 200)
+  all.cells <- RenameCells(all.cells, new.names = paste0(colnames(all.cells), "_", counter))
+  monos <- subset(all.cells, cells = All_Myeloid_comb)
+  list.10x[[i]] <- monos
+  counter <- counter + 1
+}
+
+
+print("Myeloid Cell Numbers before Filtering:")
+
+for(i in list.10x){print(nrow(i@meta.data))}
+```
+
+
+```{r Filter myeloid cells with marker genes}
+for(i in 1:length(list.10x)){  
+  monos <- list.10x[[i]]
+  monos@meta.data$date <- substr(names(list.10x)[i], 25, 100)
+  Myeloid_Cells <- WhichCells(monos, expression = FCER1G > 2 | LYZ > 2 | IFI30 > 1 | `HLA-DPB1` > 2 | 
+                                TYROBP > 1, slot = "counts")
+  Bcells <- vector()
+  if("MS4A1" %in% rownames(monos@assays$RNA$counts)){
+    MS4A1_Bcells <- WhichCells(monos, expression = MS4A1 > 0, slot = "counts")
+  }
+    if(exists("Bcells")){Bcells <- c(Bcells, MS4A1_Bcells)}
+  
+  if("IGHM" %in% rownames(monos@assays$RNA$counts)){
+    IGHM_Bcells <- WhichCells(monos, expression = IGHM > 0, slot = "counts")
+  }
+   if(exists("Bcells")){Bcells <- c(Bcells, IGHM_Bcells)}
+  
+  if("MZB1" %in% rownames(monos@assays$RNA$counts)){
+    MZB1_Bcells <- WhichCells(monos, expression = MZB1 > 0, slot = "counts")
+  }
+   if(exists("Bcells")){Bcells <- c(Bcells,  MZB1_Bcells)}
+  
+  if("CD19" %in% rownames(monos@assays$RNA$counts)){
+    CD19_Bcells <- WhichCells(monos, expression = CD19 > 0, slot = "counts")
+  }
+   if(exists("Bcells")){Bcells <- c(Bcells,  CD19_Bcells)}
+  
+  if("CD79A" %in% rownames(monos@assays$RNA$counts)){
+    CD79A_Bcells <- WhichCells(monos, expression = CD79A > 0, slot = "counts")
+  }
+  if(exists("Bcells")){Bcells <- c(Bcells,  CD79A_Bcells)}
+  
+  Tcells <- WhichCells(monos, expression = CD3D > 0 | CD3E > 0, slot = "counts")
+  
+  Myeloid_Cells <- setdiff(Myeloid_Cells, Bcells)
+  Myeloid_Cells <- setdiff(Myeloid_Cells, Tcells)
+  monos <- subset(monos, cells = Myeloid_Cells)
+  monos@meta.data$percent.mt <- PercentageFeatureSet(monos, pattern = "^MT")
+  monos@meta.data$percent.rps <- PercentageFeatureSet(monos, pattern = "^RPS")
+  monos@meta.data$percent.rpl <- PercentageFeatureSet(monos, pattern = "^RPL")
+  monos <- SCTransform(monos, verbose = FALSE)
+  list.10x[[i]] <- monos
+}
+
+print("Myeloid Cell Numbers after Filtering:")
+
+for(i in list.10x){print(nrow(i@meta.data))}
+```
+
+The CCA Integration workflow does not work anymore, since there are fewer than 100 myeloid cells in the first sample. Instead, the RPCA Integration workflow will be used, since it allows adjusting k.weights. 
+
+The worklow for RPCA will be used as describe in: https://satijalab.org/seurat/articles/integration_rpca.html
+
+```{r Integrate Data}
+features <- SelectIntegrationFeatures(object.list = list.10x, nfeatures = 3000)
+list.10x <- PrepSCTIntegration(object.list = list.10x, anchor.features = features)
+list.10x <- lapply(X = list.10x, FUN = RunPCA, features = features)
+
+immune.anchors <- FindIntegrationAnchors(object.list = list.10x, normalization.method = "SCT",
+    anchor.features = features, dims = 1:20, reduction = "rpca", k.anchor = 20)
+scMyeloid <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT", 
+                                     dims = 1:20, k.weight = 62)
+
+scMyeloid <- RunPCA(scMyeloid, verbose = FALSE)
+scMyeloid <- RunUMAP(scMyeloid, reduction = "pca", dims = 1:20)
+
+# Visualization
+p1 <- DimPlot(scMyeloid, reduction = "umap", group.by = "date")
+p1 
+
+
+scMyeloid <- FindNeighbors(scMyeloid, reduction = "pca", dims = 1:20)
+scMyeloid <- FindClusters(scMyeloid, resolution = c(0.2, 0.4, 0.6))
+
+DimPlot(scMyeloid, reduction = "umap", label = T, group.by = "integrated_snn_res.0.4",
+        cols = farbenblind15, label.size = 6)
+
+DimPlot(scMyeloid, reduction = "umap", group.by = "integrated_snn_res.0.2", label = T,
+        cols = farbenblind15, label.size = 6)
+
+DimPlot(scMyeloid, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+```
+
+
+```{r QC plots}
+Idents(scMyeloid) <- "integrated_snn_res.0.4"
+sum_table <- scMyeloid@meta.data %>% group_by(date) %>% 
+  summarise(RNA.count.median = median(nCount_RNA), RNA.feature.median = median(nFeature_RNA), 
+            MT.freq.median = median(percent.mt), RPS.freq.median = median(percent.rps), 
+            RPL.freq.median = median(percent.rpl))
+
+sum_table
+
+DimPlot(scMyeloid, reduction = "pca") + NoLegend()
+
+FeaturePlot(scMyeloid, reduction = "pca", features = "percent.mt")
+FeaturePlot(scMyeloid, reduction = "pca", features = "percent.rps")
+FeaturePlot(scMyeloid, reduction = "pca", features = "percent.rpl")
+FeaturePlot(scMyeloid, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) 
+DimHeatmap(scMyeloid, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+```{r Examine clusters}
+# Cluster Resolution 0.4
+table(scMyeloid@meta.data$date, scMyeloid@meta.data$integrated_snn_res.0.4)
+
+Cluster_over_time_04 <- scMyeloid@meta.data %>% group_by(date, integrated_snn_res.0.4) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_04, aes(x = date, y = Freq, fill = integrated_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+# Cluster Resolution 0.2
+table(scMyeloid@meta.data$date, scMyeloid@meta.data$integrated_snn_res.0.2)
+
+Cluster_over_time_04 <- scMyeloid@meta.data %>% group_by(date, integrated_snn_res.0.2) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_04, aes(x = date, y = Freq, fill = integrated_snn_res.0.2)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+```
+
+```{r Find marker, fig.height=14, fig.width=8}
+scMyeloid <- JoinLayers(scMyeloid, assay = "RNA", layers = "counts")
+
+# For better visualization, I will normalize the counts of the RNA slot to have a data slot 
+scMyeloid <- NormalizeData(scMyeloid, assay = "RNA")
+scMyeloid <- ScaleData(scMyeloid, assay = "RNA")
+
+DefaultAssay(scMyeloid) <- "RNA"
+
+# Cluster Resolution 0.4
+Cluster_marker_04 <- FindAllMarkers(scMyeloid, logfc.threshold = 0.25, min.pct = 0.25, 
+                                    only.pos = T)
+
+write.csv(Cluster_marker_04, file = "Myeloid_cells_marker_genes_res04.csv")
+
+top10_genes <- Cluster_marker_04 %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scMyeloid, features = unique(top10_genes$gene), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+DotPlot(scMyeloid, features = unique(top10_genes$gene), group.by = "integrated_snn_res.0.4") +
+  coord_flip()
+
+Cluster_marker_04_noRPS <- Cluster_marker_04[which(grepl("^RPS*", Cluster_marker_04$gene) == F),]
+Cluster_marker_04_noRPL <- Cluster_marker_04_noRPS[which(grepl("^RPL*", Cluster_marker_04_noRPS$gene) == F),]
+top10_genes_noRPS <- Cluster_marker_04_noRPL %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scMyeloid, features = unique(top10_genes_noRPS$gene), assay = "RNA", slot = "scale.data") +
+  NoLegend() + labs(title = "Heatmap without RPS transcripts")
+
+DotPlot(scMyeloid, features = unique(top10_genes_noRPS$gene), group.by = "integrated_snn_res.0.4") +
+  coord_flip() + labs(title = "Dotplot without RPS transcripts")
+
+# Top 50 Marker without RPS/RPL for Sam
+top50_genes_04 <- Cluster_marker_04_noRPL %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 50) %>% ungroup()
+
+write.csv(top50_genes_04, file = "Myeloid_cells_top50_marker_genes_res04.csv")
+
+# Cluster Resolution 0.2
+Idents(scMyeloid) <- "integrated_snn_res.0.2"
+Cluster_marker_02 <- FindAllMarkers(scMyeloid, logfc.threshold = 0.25, min.pct = 0.25, 
+                                    only.pos = T)
+
+write.csv(Cluster_marker_02, file = "Myeloid_cells_marker_genes_res02.csv")
+
+top10_genes <- Cluster_marker_02 %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scMyeloid, features = unique(top10_genes$gene), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+DotPlot(scMyeloid, features = unique(top10_genes$gene), group.by = "integrated_snn_res.0.2") +
+  coord_flip()
+
+Cluster_marker_02_noRPS <- Cluster_marker_02[which(grepl("^RPS*", Cluster_marker_02$gene) == F),]
+Cluster_marker_02_noRPL <- Cluster_marker_02_noRPS[which(grepl("^RPL*", Cluster_marker_02_noRPS$gene) == F),]
+top10_genes_noRPS <- Cluster_marker_02_noRPL %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scMyeloid, features = unique(top10_genes_noRPS$gene), assay = "RNA", slot = "scale.data") +
+  NoLegend() + labs(title = "Heatmap without RPS transcripts")
+
+DotPlot(scMyeloid, features = unique(top10_genes_noRPS$gene), group.by = "integrated_snn_res.0.4") +
+  coord_flip() + labs(title = "Dotplot without RPS transcripts")
+
+#Top 50 Marker for Sam
+top50_genes_02 <- Cluster_marker_02_noRPL %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 50) %>% ungroup()
+
+write.csv(top50_genes_02, file = "Myeloid_cells_top50_marker_genes_res04.csv")
+```
+
+```{r Annotations}
+Myo.sce <- as.SingleCellExperiment(scMyeloid, assay = "integrated")
+Myo.sce
+ls('package:celldex')
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+head(unique(ref.set$label.fine),20)
+pred.cnts <- SingleR::SingleR(test = Myo.sce, ref = ref.set, labels = ref.set$label.fine)
+
+lbls.keep <- table(pred.cnts$labels)>10
+scMyeloid$SingleR.labels <- ifelse(lbls.keep[pred.cnts$labels], pred.cnts$labels, 'Other')
+
+DimPlot(scMyeloid, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+
+# Potential Idents for Res 0.4
+Myos_annotations <- scMyeloid@meta.data %>% group_by(integrated_snn_res.0.4, SingleR.labels) %>% 
+  summarise(potential.ident = n())
+
+Myos_top_ann_04 <- Myos_annotations %>% group_by(integrated_snn_res.0.4) %>% 
+  slice_max(potential.ident, n = 3)
+
+print(Myos_top_ann_04)
+
+# Potential Idents for Res 0.2
+Myos_annotations_02 <- scMyeloid@meta.data %>% group_by(integrated_snn_res.0.2, SingleR.labels) %>% 
+  summarise(potential.ident = n())
+
+Myos_top_ann_02 <- Myos_annotations_02 %>% group_by(integrated_snn_res.0.2) %>% 
+  slice_max(potential.ident, n = 3)
+
+print(Myos_top_ann_02)
+
+
+saveRDS(scMyeloid, file = "Myeloid_Cells.rds")
+```
+
+## Marker Gene Resolution 0.4
+
+### Monocyte Marker Genes Res 0.4
+
+```{r Violin Plots Monocyte markers}
+Idents(scMyeloid) <- "integrated_snn_res.0.4"
+
+#Monocyte marker
+VlnPlot(scMyeloid, features = "CD14", layer = "data")
+VlnPlot(scMyeloid, features = "FCGR3A", layer = "data") #CD16a (NK cells, macrophages)
+VlnPlot(scMyeloid, features = "S100A8", layer = "data")
+```
+
+### Activated innate immun cells 0.4
+
+```{r Monocyte markers 2}
+VlnPlot(scMyeloid, features = "NEAT1", layer = "data")
+VlnPlot(scMyeloid, features = "CD83", layer = "data")
+VlnPlot(scMyeloid, features = "TNFAIP3", layer = "data")
+VlnPlot(scMyeloid, features = "NFKB1", layer = "data")
+```
+
+### Macrophagen Marker Gene
+
+```{r Macrophage Marker genes}
+VlnPlot(scMyeloid, features = "CCR1", layer = "data")
+VlnPlot(scMyeloid, features = "LYZ", layer = "data")
+VlnPlot(scMyeloid, features = "APOE", layer = "data")
+VlnPlot(scMyeloid, features = "CD4", layer = "data")
+VlnPlot(scMyeloid, features = "ITGAM", layer = "data") #CD11b
+VlnPlot(scMyeloid, features = "CSF1R", layer = "data") #CD115
+VlnPlot(scMyeloid, features = "CD163", layer = "data") # (M2 Macs)
+VlnPlot(scMyeloid, features = "MRC1", layer = "data") #CD206(M2 Mac)
+VlnPlot(scMyeloid, features = "CD209", layer = "data") #(M2 Mac)
+VlnPlot(scMyeloid, features = "TGFB1", layer = "data") #(M2 Mac)
+VlnPlot(scMyeloid, features = "MAF", layer = "data") #(M2 Mac)
+```
+
+
+### DC Marker Gene
+
+```{r Violins for DC marker genes}
+VlnPlot(scMyeloid, features = "ID2") # cDC1 and cDC2 marker
+
+VlnPlot(scMyeloid, features = "IRF8") # cDC1 marker
+VlnPlot(scMyeloid, features = "CLEC9A") # cDC1 marker
+VlnPlot(scMyeloid, features = "LY75") #CD205 # cDC1 marker
+VlnPlot(scMyeloid, features = "ITGAE") #CD103 # cDC1 marker
+VlnPlot(scMyeloid, features = "CD8A") #cDC1 marker
+VlnPlot(scMyeloid, features = "CADM1") #cDC1 marker
+VlnPlot(scMyeloid, features = "ITGAX") #CD11C
+
+VlnPlot(scMyeloid, features = "IRF4") # cDC2 marker
+VlnPlot(scMyeloid, features = "CD1C") #cDC2 marker
+VlnPlot(scMyeloid, features = "FCER1A") # cDC2 Marker
+VlnPlot(scMyeloid, features = "CLEC10A") # cDC2 Marker
+VlnPlot(scMyeloid, features = "FCGR2B") #CD32b # cDC2 Marker
+```
+
+
+### pDC Marker Gene
+
+```{r pDC marker}
+VlnPlot(scMyeloid, features = "IL3RA") #CD123 
+VlnPlot(scMyeloid, features = "NRP1") #CD304
+```
+
+
+### Neutrophil marker
+
+```{r Neutrophil violins}
+VlnPlot(scMyeloid, features = "FCGR3B") #CD16b
+VlnPlot(scMyeloid, features = "CXCR2")
+VlnPlot(scMyeloid, features = "IL17RA")
+```
+
+### B cell Marker Gene
+
+```{r B cell marker}
+VlnPlot(scMyeloid, features = "CD52")
+VlnPlot(scMyeloid, features = "CD37")
+VlnPlot(scMyeloid, features = "IGHA1")
+```
+
+
+#Inflammatory Marker Gene
+
+```{r inflammation marker}
+VlnPlot(scMyeloid, features = "IL1B")
+VlnPlot(scMyeloid, features = "IL6")
+VlnPlot(scMyeloid, features = "CCL24")
+VlnPlot(scMyeloid, features = "MMP12")
+```
+
+
+```{r Rename Idents}
+scMyeloid <- RenameIdents(scMyeloid, '0' = 'M2 Macrophages_1',
+                          '1' = 'Inflammatory monocyte-derived Macrophages', 
+                          '2' = 'M1 Macrophages', 
+                          '3' = 'M2 Macrophages_2', 
+                          '4' = 'cDC1', 
+                          '5' = 'cDC2', 
+                          '6' = 'Neutrophils')
+
+DimPlot(scMyeloid, reduction = "umap", label = T)
+
+scMyeloid$Annotation <- Idents(scMyeloid)
+
+Cluster_over_time_ann_04 <- scMyeloid@meta.data %>% group_by(date, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = (n/sum(n))*100)
+
+ggplot(Cluster_over_time_ann_04, aes(x = date, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + labs(y = "% of myeloid cells") + 
+  theme_minimal()
+
+DimPlot(scMyeloid, reduction = "umap", cols = farbenblind15) + coord_equal(ratio = 1.5)
+
+ggsave("/Figures/Myeloid_cells_umap_res04.tiff", plot = last_plot(),
+       device = "tiff", dpi = 300, width = 10, height = 7, units = "in", compression = "lzw")
+
+saveRDS(scMyeloid, file = "Myeloid_Cells_annotated.rds")
+```
+
+## Marker Gene Resolution 0.2
+
+### Monocyte Marker Resolution 0.2
+
+```{r Monocyte Marker}
+Idents(scMyeloid) <- "integrated_snn_res.0.2"
+
+#Monocyte marker
+VlnPlot(scMyeloid, features = "CD14", layer = "data")
+VlnPlot(scMyeloid, features = "FCGR3A", layer = "data") #CD16a (NK cells, macrophages)
+VlnPlot(scMyeloid, features = "CD163", layer = "data")
+VlnPlot(scMyeloid, features = "S100A8", layer = "data")
+```
+
+```{r Activated innate immune cells}
+VlnPlot(scMyeloid, features = "NEAT1", layer = "data")
+VlnPlot(scMyeloid, features = "CD83", layer = "data")
+VlnPlot(scMyeloid, features = "TNFAIP3", layer = "data")
+VlnPlot(scMyeloid, features = "NFKB1", layer = "data")
+```
+
+### Macrophages Marker 0.2
+
+```{r Macs 0.2}
+VlnPlot(scMyeloid, features = "C1QC", layer = "data")
+VlnPlot(scMyeloid, features = "CCR1", layer = "data")
+VlnPlot(scMyeloid, features = "LYZ", layer = "data")
+VlnPlot(scMyeloid, features = "APOE", layer = "data")
+VlnPlot(scMyeloid, features = "CD4", layer = "data")
+VlnPlot(scMyeloid, features = "ITGAM", layer = "data") #CD11b
+VlnPlot(scMyeloid, features = "CSF1R", layer = "data") #CD115
+VlnPlot(scMyeloid, features = "MRC1", layer = "data") #CD206(M2 Mac)
+VlnPlot(scMyeloid, features = "CD209", layer = "data") #(M2 Mac)
+VlnPlot(scMyeloid, features = "TGFB1", layer = "data") #(M2 Mac)
+VlnPlot(scMyeloid, features = "MAF", layer = "data") #(M2 Mac)
+```
+```{r DC marker 0.2}
+VlnPlot(scMyeloid, features = "ID2") # cDC1 and cDC2 marker
+
+VlnPlot(scMyeloid, features = "IRF8") # cDC1 marker
+VlnPlot(scMyeloid, features = "CLEC9A") # cDC1 marker
+VlnPlot(scMyeloid, features = "LY75") #CD205 # cDC1 marker
+VlnPlot(scMyeloid, features = "ITGAE") #CD103 # cDC1 marker
+VlnPlot(scMyeloid, features = "CD8A") #cDC1 marker
+VlnPlot(scMyeloid, features = "CADM1") #cDC1 marker
+VlnPlot(scMyeloid, features = "ITGAX") #CD11C
+
+VlnPlot(scMyeloid, features = "IRF4") # cDC2 marker
+VlnPlot(scMyeloid, features = "CD1C") #cDC2 marker
+VlnPlot(scMyeloid, features = "FCER1A") # cDC2 Marker
+VlnPlot(scMyeloid, features = "CLEC10A") # cDC2 Marker
+VlnPlot(scMyeloid, features = "FCGR2B") #CD32b # cDC2 Marker
+```
+
+```{r pDC marker 02}
+VlnPlot(scMyeloid, features = "IL3RA") #CD123 
+VlnPlot(scMyeloid, features = "NRP1") #CD304
+```
+
+
+```{r Neutrophils 0.2}
+VlnPlot(scMyeloid, features = "FCGR3B") #CD16b
+VlnPlot(scMyeloid, features = "CXCR2")
+VlnPlot(scMyeloid, features = "IL17RA")
+VlnPlot(scMyeloid, features = "CEACAM8")
+```
+
+```{r B and T cell Marker 0.2}
+VlnPlot(scMyeloid, features = "CD52")
+VlnPlot(scMyeloid, features = "CD37")
+VlnPlot(scMyeloid, features = "IGHA1")
+```
+
+
+```{r Inflammatory marker 0.2}
+VlnPlot(scMyeloid, features = "IL1B")
+VlnPlot(scMyeloid, features = "IL6")
+VlnPlot(scMyeloid, features = "CCL24")
+VlnPlot(scMyeloid, features = "MMP12")
+```
+
+
+```{r Idents Res 0.2}
+Idents(scMyeloid) <- "integrated_snn_res.0.2" 
+
+scMyeloid_02 <- RenameIdents(scMyeloid, '0' = 'M1 Macrophages',
+                          '1' = 'Inflammatory monocyte-derived macrophage', 
+                          '2' = 'M2 Macrophages', 
+                          '3' = 'DCs', 
+                          '4' = 'Neutrophils')
+
+DimPlot(scMyeloid_02, reduction = "umap", label = T)
+
+scMyeloid_02$Annotation <- Idents(scMyeloid_02)
+
+Cluster_over_time_ann_02 <- scMyeloid_02@meta.data %>% group_by(date, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = (n/sum(n))*100)
+
+ggplot(Cluster_over_time_ann_02, aes(x = date, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + labs(y = "% of myeloid cells") + 
+  theme_minimal()
+
+DimPlot(scMyeloid_02, reduction = "umap", cols = farbenblind15) + coord_equal(ratio = 1.5)
+
+ggsave("/Figures/Myeloid_cells_umap_res02.tiff", plot = last_plot(),
+       device = "tiff", dpi = 300, width = 10, height = 7, units = "in", compression = "lzw")
+
+saveRDS(scMyeloid_02, "Myeloid_Cells_res02_annotated.rds")
+```
+
+```{r Frequencies in all cells}
+All_cells_TP <- scobject@meta.data %>% group_by(date) %>% summarise(All.n = n())
+All_cells_TP
+
+## All Myeloid cells
+Myeloid_over_time <- scMyeloid@meta.data %>% group_by(date) %>% 
+  summarise(Myeloid.n = n()) 
+
+# Merge data.frames
+Freq_of_myeloid_in_all <- full_join(All_cells_TP, Myeloid_over_time, by = "date")
+
+Freq_of_myeloid_in_all <- Freq_of_myeloid_in_all %>% mutate(Freq_in_all = Myeloid.n/All.n*100)
+
+ggplot(Freq_of_myeloid_in_all, aes(x = date, y = Freq_in_all)) + 
+  geom_col(fill = "#924900") + labs(x = "Date" , y = "% of total cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave(filename = "/Figures/Percentage_all_myeloid_cells_in_total_cells.tiff",
+  plot = last_plot(), device = "tiff", dpi = 300, width = 10, height = 7, units = "in", 
+       compression = "lzw")
+
+# Frequencies for myeloid clusters res 0.4 
+# Add Zeros for missing clusters
+
+Cluster_over_time_res_04 <- scMyeloid@meta.data %>% group_by(date, integrated_snn_res.0.4) %>% 
+  summarise(Myeloid_n = n()) %>% mutate(Freq = (Myeloid_n/sum(Myeloid_n))*100)
+
+Idents(scMyeloid) <- "Annotation"
+Myeloid_Clusters <- seq(0,6,1)
+date.list <- list()
+for(i in unique(Cluster_over_time_res_04$date)){
+  Myeloid_date <- Cluster_over_time_res_04 %>% subset(Cluster_over_time_res_04$date == i)
+  if(nrow(Myeloid_date) < 7){
+    missing_Myeloid_Clusters <- setdiff(Myeloid_Clusters, Myeloid_date$integrated_snn_res.0.4)
+    Zero_Clusters <- data.frame(date = rep(i, length(missing_Myeloid_Clusters)),
+                                integrated_snn_res.0.4 = as.factor(missing_Myeloid_Clusters),
+                                Myeloid_n = rep(0, length(missing_Myeloid_Clusters)),
+                                Freq = rep(0, length(missing_Myeloid_Clusters)))
+    Myeloid_date <- rbind(Myeloid_date, Zero_Clusters)
+  }
+  date.list[[i]] <- Myeloid_date
+}
+
+Myeloid_Cluster_over_time <- do.call(rbind, date.list)
+
+# Name Myeloid cell clusters
+Myeloid_cluster_annotations <- data.frame("integrated_snn_res.0.4" = seq(0,6,1),
+                                        "Annotation" = levels(scMyeloid$Annotation))
+
+Myeloid_Cluster_over_time <- merge(Myeloid_Cluster_over_time, Myeloid_cluster_annotations,
+                                      by = "integrated_snn_res.0.4")
+
+write.csv(Myeloid_Cluster_over_time, file = "Myeloid_cell_freq_res04.csv")
+
+# Lineplot
+ggplot(Myeloid_Cluster_over_time, aes(x = date, y = Freq, group = Annotation,
+                                 color = Annotation)) + geom_line(linewidth = 1.5) +
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of Myeloid Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave(filename = "/Figures/Cluster_percentage_myeloid_cells_res04.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 10, height = 7, units = "in", 
+       compression = "lzw")
+
+## Percentage of myeloid cell clusters in all cells (resolution 0.4)
+Freq_of_myeloid_cluster_in_all <- full_join(Myeloid_Cluster_over_time, All_cells_TP, by = "date")
+
+Freq_of_myeloid_cluster_in_all <- Freq_of_myeloid_cluster_in_all %>% mutate(Freq_in_all = Myeloid_n/All.n*100)
+
+write.csv(Freq_of_myeloid_cluster_in_all, file = "Myeloid_cell_freq_in_total_cells_res04.csv")
+
+
+ggplot(Freq_of_myeloid_cluster_in_all, aes(x = date, y = Freq_in_all, group = Annotation, color = Annotation)) + 
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of total cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave(filename = "/Figures/Cluster_percentage_myeloid_cells_in_total_cells_res04.tiff",
+  plot = last_plot(), device = "tiff", dpi = 300, width = 10, height = 7, units = "in", compression = "lzw")
+
+
+
+## Resolution 0.2
+# Add Zeros for missing clusters
+
+Cluster_over_time_res_02 <- scMyeloid@meta.data %>% group_by(date, integrated_snn_res.0.2) %>% 
+  summarise(Myeloid_n = n()) %>% mutate(Freq = (Myeloid_n/sum(Myeloid_n))*100)
+
+Myeloid_Clusters_02 <- seq(0,4,1)
+date.list.02 <- list()
+for(i in unique(Cluster_over_time_res_02$date)){
+  Myeloid_date_02 <- Cluster_over_time_res_02 %>% subset(Cluster_over_time_res_02$date == i)
+  if(nrow(Myeloid_date_02) < 5){
+    missing_Myeloid_Clusters <- setdiff(Myeloid_Clusters_02, Myeloid_date_02$integrated_snn_res.0.2)
+    Zero_Clusters_02 <- data.frame(date = rep(i, length(missing_Myeloid_Clusters)),
+                                integrated_snn_res.0.2 = as.factor(missing_Myeloid_Clusters),
+                                Myeloid_n = rep(0, length(missing_Myeloid_Clusters)),
+                                Freq = rep(0, length(missing_Myeloid_Clusters)))
+    Myeloid_date_02 <- rbind(Myeloid_date_02, Zero_Clusters_02)
+  }
+  date.list.02[[i]] <- Myeloid_date_02
+}
+
+Myeloid_Cluster_over_time_02 <- do.call(rbind, date.list.02)
+
+# Name Myeloid cell clusters
+Myeloid_cluster_annotations_02 <- data.frame("integrated_snn_res.0.2" = seq(0,4,1),
+                                        "Annotation" = levels(Idents(scMyeloid_02)))
+
+Myeloid_Cluster_over_time_02 <- merge(Myeloid_Cluster_over_time_02, Myeloid_cluster_annotations_02,
+                                      by = "integrated_snn_res.0.2")
+
+write.csv(Myeloid_Cluster_over_time_02, file = "Myeloid_cell_freq_res02.csv")
+
+# Lineplot
+ggplot(Myeloid_Cluster_over_time_02, aes(x = date, y = Freq, group = Annotation,
+                                 color = Annotation)) + geom_line(linewidth = 1.5) +
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of Myeloid Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave(filename = "/Figures/Cluster_percentage_myeloid_cells_res02.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 10, height = 7, units = "in", 
+       compression = "lzw")
+
+## Percentage of myeloid cell clusters in all cells (resolution 0.2)
+Freq_of_myeloid_cluster_in_all_02 <- full_join(Myeloid_Cluster_over_time_02, All_cells_TP, by = "date")
+
+Freq_of_myeloid_cluster_in_all_02 <- Freq_of_myeloid_cluster_in_all_02 %>% mutate(Freq_in_all = Myeloid_n/All.n*100)
+
+write.csv(Freq_of_myeloid_cluster_in_all_02, file = "Myeloid_cell_freq_in_total_cells_res02.csv")
+
+
+ggplot(Freq_of_myeloid_cluster_in_all_02, aes(x = date, y = Freq_in_all, group = Annotation, color = Annotation)) + 
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of total cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+ggsave(filename = "/Figures/Cluster_percentage_myeloid_cells_in_total_cells_res02.tiff",
+  plot = last_plot(), device = "tiff", dpi = 300, width = 10, height = 7, units = "in", 
+       compression = "lzw")
+```

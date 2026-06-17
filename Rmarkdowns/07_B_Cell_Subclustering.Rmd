@@ -1,0 +1,482 @@
+---
+title: "B Cell Subclustering"
+author: "Julia Hitschfel"
+date: "2025-11-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SeuratObject)
+library(scDblFinder)
+library(SingleCellExperiment)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+```
+
+## B Cell Subclustering 
+
+
+```{r Import Dataset and Examine B cell Frequenices}
+scobject <- readRDS(file = "integrated_seurat_refined_annotations.rds")
+
+Idents(scobject) <- scobject$SCT_snn_res.0.4
+```
+
+```{r B Zellen pro Zeitpunkt}
+B.cells <- scobject@meta.data %>% filter(SCT_snn_res.0.4 == 1 | SCT_snn_res.0.4 == 9 | 
+                                           SCT_snn_res.0.4 == 11 | SCT_snn_res.0.4 == 12)
+
+B.cells.per.TP <- B.cells %>% group_by(date, SCT_snn_res.0.4) %>% summarise(B.count = n())
+
+ggplot(B.cells.per.TP, aes(x = date, y = B.count, fill = SCT_snn_res.0.4)) + 
+  geom_col(position = "dodge") + labs(title = "Absolute Cell Counts in Clusters with B cells") + 
+  ylab(label = "Cell Count") + 
+  scale_fill_manual(name = "Clusters containing B cells", 
+                    values = c("lightblue", "black", "grey", "darkblue")) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+# Approximate B cell frequencies 
+All.cells.per.TP <- scobject@meta.data %>% group_by(date) %>% summarise(Cell.count = n())
+B.cell.freq.per.TP <- left_join(B.cells.per.TP, All.cells.per.TP, by = "date")
+B.cell.freq.per.TP <- B.cell.freq.per.TP %>% mutate(Freq = (B.count/Cell.count)*100)
+
+ggplot(B.cell.freq.per.TP, aes(x = date, y = Freq, fill = SCT_snn_res.0.4)) + 
+  geom_col(position = "dodge") + labs(title = "Cell Frequencies Clusters with B cells") + 
+  ylab(label = "Cell Frequencies") + 
+  scale_fill_manual(name = "Clusters containing B cells", 
+                    values = c("lightblue", "black", "grey", "darkblue")) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r Import B Cells}
+All_Bcells_comb <- WhichCells(scobject, idents = c(1,9,11,12))
+
+All.data <- list.dirs("/data/", recursive = F)
+
+list.10x <- list()
+counter <- 1
+for(i in All.data){
+  rnaseq.data <- Read10X_h5(paste0(i, "/count/sample_filtered_feature_bc_matrix.h5"))
+  pbmc <- CreateSeuratObject(counts = rnaseq.data, project = "Colitis", min.cells = 3, 
+                             min.features = 200)
+  pbmc <- RenameCells(pbmc, new.names = paste0(colnames(pbmc), "_", counter))
+  pbmc <- subset(pbmc, cells = All_Bcells_comb)
+  list.10x[[i]] <- pbmc
+  counter <- counter + 1
+}
+
+
+print("Cell Numbers before Filtering:")
+for(i in list.10x){print(nrow(i@meta.data))}
+```
+
+```{r B cell QC}
+for(i in 1:length(list.10x)){
+  pbmc <- list.10x[[i]]
+  pbmc@meta.data$date <- substr(names(list.10x)[i], 25, 100)
+  pbmc@meta.data$percent.mt <- PercentageFeatureSet(pbmc, pattern = "^MT")
+  pbmc@meta.data$percent.rps <- PercentageFeatureSet(pbmc, pattern = "^RPS")
+  pbmc@meta.data$percent.rpl <- PercentageFeatureSet(pbmc, pattern = "^RPL")
+  list.10x[[i]] <- pbmc
+}
+
+scobject <- merge(x = list.10x[[1]], y = c(list.10x[2:length(list.10x)]))
+
+sum_table <- scobject@meta.data %>% group_by(date) %>% 
+  summarise(RNA.count.median = median(nCount_RNA), RNA.feature.median = median(nFeature_RNA), 
+            MT.freq.median = median(percent.mt), RPS.freq.median = median(percent.rps), 
+            RPL.freq.median = median(percent.rpl))
+
+sum_table
+
+ggplot(scobject@meta.data, aes(x = date, y = nCount_RNA)) + geom_boxplot()
+
+ggplot(scobject@meta.data, aes(x = date, y = nFeature_RNA)) + geom_boxplot()
+
+```
+
+```{r B Cell Clustering}
+scobject <- NormalizeData(scobject, normalization.method = "LogNormalize", scale.factor = 10000)
+
+scobject <- FindVariableFeatures(scobject, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(scobject), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(scobject)  + NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE) + NoLegend()
+plot1 + plot2
+
+all.genes <- rownames(scobject)
+scobject <- ScaleData(scobject, features = all.genes)
+
+# Cluster after Regression 
+scobject <- RunPCA(scobject, features = VariableFeatures(object = scobject))
+
+# Examine and visualize PCA results a few different ways
+print(scobject[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(scobject, dims = 1:2, reduction = "pca")
+DimPlot(scobject, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(scobject, reduction = "pca", features = "percent.mt")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rps")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rpl")
+
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) #+ NoLegend()
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", dims = c(1,3), max.cutoff = 5000) +
+  NoLegend()
+
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) + NoLegend()
+
+DimHeatmap(scobject, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(scobject, dims = 1:15, cells = 500, balanced = TRUE)
+
+#Cluster the cells
+scobject <- FindNeighbors(scobject, dims = 1:25)
+scobject <- FindClusters(scobject, resolution = c(0.4, 0.6, 0.8))
+scobject <- RunUMAP(scobject, dims = 1:25)
+saveRDS(scobject, file = "Bcells_regression.rds")
+
+
+DimPlot(scobject, reduction = "umap", group.by = "seurat_clusters", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "date")
+DimPlot(scobject, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+```
+
+There seem to be visible batch effects, as seen for the total cell clustering and the T cell clustering. We will also attempt an integration here for this data, which could be challenging because of the low cell count at the later timepoints. 
+There also are epithelial cells and myeloid cells contained in the clustering. Filters will be included to remove these cells from downstream analysis. Variable Features of epithelial cells are KRT17, MUC2 and die the strongest driver for PC1 are PIGR and KRT8. 
+
+
+```{r B Cell Clustering Regression}
+for(i in 1:length(list.10x)){
+  pbmc <- list.10x[[i]]
+  EpithelialCells <- WhichCells(pbmc, expression = KRT18 > 0 | KRT8 > 0 | PIGR > 1, slot = "counts")
+  Monocytes <- WhichCells(pbmc, expression = CD14 > 1, slot = "counts")
+  T_Cells <- WhichCells(pbmc, expression = CD3D > 0 | CD3E > 0, slot = "counts")
+  Erys <- WhichCells(pbmc, expression = HBA1 > 0, slot = "counts")
+  if("LILRB1" %in% rownames(pbmc@assays$RNA$counts)){
+    pDCs <- WhichCells(pbmc, expression = LILRB1 > 1, slot = "counts")
+  }
+  Non_EpithelialCells <- setdiff(rownames(pbmc@meta.data), EpithelialCells)
+  Non_Monocytes <- setdiff(Non_EpithelialCells, Monocytes)
+  Non_Tcells <- setdiff(Non_Monocytes, T_Cells)
+  Non_Erys <- setdiff(Non_Tcells, Erys)
+  if(exists("pDCs")){Non_Erys <- setdiff(Non_Erys, pDCs)}
+  pbmc <- subset(pbmc, cells = Non_Erys)
+  list.10x[[i]] <- pbmc
+}
+
+scobject <- merge(x = list.10x[[1]], y = c(list.10x[2:length(list.10x)]))
+
+print("B Cell Numbers after Filtering:")
+for(i in list.10x){print(nrow(i@meta.data))}
+
+sum_table <- scobject@meta.data %>% group_by(date) %>%
+  summarise(RNA.count.median = median(nCount_RNA), RNA.feature.median = median(nFeature_RNA),
+            MT.freq.median = median(percent.mt), RPS.freq.median = median(percent.rps),
+            RPL.freq.median = median(percent.rpl))
+
+sum_table
+
+scobject <- NormalizeData(scobject, normalization.method = "LogNormalize", scale.factor = 10000)
+
+scobject <- FindVariableFeatures(scobject, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(scobject), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(scobject)  + NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE) + NoLegend()
+plot1 + plot2
+
+all.genes <- rownames(scobject)
+scobject <- ScaleData(scobject, features = all.genes)
+
+# Cluster after Regression 
+scobject <- RunPCA(scobject, features = VariableFeatures(object = scobject))
+
+# Examine and visualize PCA results a few different ways
+print(scobject[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(scobject, dims = 1:2, reduction = "pca")
+DimPlot(scobject, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(scobject, reduction = "pca", features = "percent.mt")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rps")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rpl")
+
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) 
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", dims = c(1,3), max.cutoff = 5000) +
+  NoLegend()
+
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) + NoLegend()
+
+DimHeatmap(scobject, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(scobject, dims = 1:15, cells = 500, balanced = TRUE)
+```
+ 
+
+```{r Clustering B cells}
+#Cluster the cells
+ElbowPlot(scobject, ndims = 25)
+scobject <- FindNeighbors(scobject, dims = 1:20)
+scobject <- FindClusters(scobject, resolution = c(0.4, 0.6, 0.8))
+scobject <- RunUMAP(scobject, dims = 1:20)
+saveRDS(scobject, file = "Bcells_subclustering.rds")
+
+DimPlot(scobject, reduction = "umap", group.by = "RNA_snn_res.0.8", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "RNA_snn_res.0.6", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "RNA_snn_res.0.4", label = T)
+
+DimPlot(scobject, reduction = "umap", group.by = "date")
+DimPlot(scobject, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+```
+
+```{r Identify markers}
+scobject <- JoinLayers(scobject)
+Idents(scobject) <- "RNA_snn_res.0.4"
+Markers_clusters <- FindAllMarkers(scobject, logfc.threshold = 0.25, min.pct = 0.25, only.pos = T)
+```
+
+
+```{r Markers Violins}
+VlnPlot(scobject, "MS4A1")
+ 
+VlnPlot(scobject, "CD19")
+ 
+VlnPlot(scobject, "MKI67")
+
+VlnPlot(scobject, "FCRL5")
+
+VlnPlot(scobject, "CD74")
+
+VlnPlot(scobject, "CD79A")
+
+VlnPlot(scobject, "CR2") #CD21
+ 
+VlnPlot(scobject, "CD24")
+
+VlnPlot(scobject, "LILRA4")
+ 
+VlnPlot(scobject, "ITGAX")
+
+
+VlnPlot(scobject, "IGHG1")
+VlnPlot(scobject, "IGHA1")
+VlnPlot(scobject, "JCHAIN")
+
+VlnPlot(scobject, "CD22")
+VlnPlot(scobject, "CD27")
+VlnPlot(scobject, "IGHM")
+VlnPlot(scobject, "IGHD")
+
+VlnPlot(scobject, "MZB1")
+VlnPlot(scobject, "PRDM1")
+VlnPlot(scobject, "SDC1")
+VlnPlot(scobject, "TNFRSF13C")
+
+VlnPlot(scobject, "IDO1")
+VlnPlot(scobject, "LYZ")
+VlnPlot(scobject, "TYROBP")
+VlnPlot(scobject, "LGALS4")
+```
+
+## Summary
+We likely need to improve filters and include IDO1 and LGALS4, so just B cells are retained. 
+
+For Myeloid Cells: IDO1 > 1, for epithelial cells: LGALS > 1, for T cells FYN > 1 as filters. 
+
+## Additional Filters
+
+```{r Filters and SCTransform}
+list.10x.filt <- list()
+for(i in 1:length(list.10x)){
+  pbmc <- list.10x[[i]]
+  MyeloidCells <- WhichCells(pbmc, expression = IDO1 > 0 | LYZ > 0, slot = "counts")
+  T_Cells <- WhichCells(pbmc, expression = FYN > 1, slot = "counts")
+  SECs <- WhichCells(pbmc, expression = LGALS4 > 1, slot = "counts")
+  Non_MyeloidCells <- setdiff(rownames(pbmc@meta.data), MyeloidCells)
+  Non_Tcells <- setdiff(Non_MyeloidCells, T_Cells)
+  Non_SECs <- setdiff(Non_Tcells, SECs)
+  pbmc <- subset(pbmc, cells = Non_SECs)
+  list.10x.filt[[i]] <- pbmc
+}
+
+scBcells <- merge(x = list.10x.filt[[1]], y = c(list.10x.filt[2:length(list.10x.filt)]))
+
+scBcells <- NormalizeData(scBcells, normalization.method = "LogNormalize", scale.factor = 10000)
+
+scBcells <- FindVariableFeatures(scBcells, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(scBcells), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(scBcells)  + NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE) + NoLegend()
+plot1 + plot2
+
+all.genes <- rownames(scBcells)
+scBcells <- ScaleData(scBcells, features = all.genes)
+
+scBcells <- RunPCA(scBcells, features = VariableFeatures(object = scBcells))
+
+# Examine and visualize PCA results a few different ways
+print(scBcells[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(scBcells, dims = 1:2, reduction = "pca")
+DimPlot(scBcells, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(scBcells, reduction = "pca", features = "percent.mt")
+FeaturePlot(scBcells, reduction = "pca", features = "percent.rps")
+FeaturePlot(scBcells, reduction = "pca", features = "percent.rpl")
+
+FeaturePlot(scBcells, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) #+ NoLegend()
+FeaturePlot(scBcells, features = "nCount_RNA", reduction = "pca", dims = c(1,3), max.cutoff = 5000) +
+  NoLegend()
+
+FeaturePlot(scBcells, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(scBcells, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) + NoLegend()
+
+DimHeatmap(scBcells, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(scBcells, dims = 1:15, cells = 500, balanced = TRUE)
+
+ElbowPlot(scBcells, ndims = 25)
+scBcells <- FindNeighbors(scBcells, dims = 1:15)
+scBcells <- FindClusters(scBcells, resolution = c(0.4, 0.6, 0.8))
+scBcells <- RunUMAP(scBcells, dims = 1:15)
+saveRDS(scBcells, file = "D:/Sequencing_data/analysis_all_tp/Bcells_subclustering.rds")
+
+DimPlot(scBcells, reduction = "umap", group.by = "RNA_snn_res.0.8", label = T)
+DimPlot(scBcells, reduction = "umap", group.by = "RNA_snn_res.0.6", label = T)
+DimPlot(scBcells, reduction = "umap", group.by = "RNA_snn_res.0.4", label = T)
+
+DimPlot(scBcells, reduction = "umap", group.by = "date")
+DimPlot(scBcells, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+
+scBcells <- JoinLayers(scBcells)
+Idents(scBcells) <- "RNA_snn_res.0.4"
+Markers_clusters_filt <- FindAllMarkers(scBcells, logfc.threshold = 0.25, min.pct = 0.25, 
+                                        only.pos = T)
+write.csv(Markers_clusters_filt, file = "Bcell_cluster_marker_genes_filt.csv")
+
+VlnPlot(scBcells, "MS4A1")
+ 
+VlnPlot(scBcells, "CD19")
+ 
+VlnPlot(scBcells, "MKI67")
+
+VlnPlot(scBcells, "FCRL5")
+
+VlnPlot(scBcells, "CD74")
+
+VlnPlot(scBcells, "CD79A")
+
+VlnPlot(scBcells, "CR2") #CD21
+ 
+VlnPlot(scBcells, "CD24")
+
+VlnPlot(scBcells, "LILRA4")
+ 
+VlnPlot(scBcells, "ITGAX")
+
+
+VlnPlot(scBcells, "IGHG1")
+VlnPlot(scBcells, "IGHA1")
+VlnPlot(scBcells, "JCHAIN")
+
+VlnPlot(scBcells, "CD22")
+VlnPlot(scBcells, "CD27")
+VlnPlot(scBcells, "IGHM")
+VlnPlot(scBcells, "IGHD")
+
+VlnPlot(scBcells, "MZB1")
+VlnPlot(scBcells, "PRDM1")
+VlnPlot(scBcells, "SDC1")
+VlnPlot(scBcells, "TNFRSF13C")
+
+VlnPlot(scBcells, "LYZ")
+VlnPlot(scBcells, "TYROBP")
+```
+
+
+```{r Cluster over time}
+Cluster_over_time_filt <- scBcells@meta.data %>% group_by(date, RNA_snn_res.0.4) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+
+ggplot(Cluster_over_time_filt, aes(x = date, y = Freq, fill = RNA_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+```
+
+
+```{r Examine Cluster over time}
+Cluster_0 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 0)
+Cluster_0_gg <- ggplot(Cluster_0, aes(x = date, y = Freq)) + geom_col(fill = "#000000") +  
+  labs(title = "Cluster 0 (PB/PC) Frequencies") + theme_minimal()
+Cluster_0_gg
+
+Cluster_2 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 2)
+Cluster_2_gg <- ggplot(Cluster_2, aes(x = date, y = Freq)) + geom_col(fill = "#009292") +  
+  labs(title = "Cluster 2 (PB/PC) Frequencies") + theme_minimal()
+Cluster_2_gg
+
+Cluster_4 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 4)
+Cluster_4_gg <- ggplot(Cluster_4, aes(x = date, y = Freq)) + geom_col(fill = "#FFB6DB") +  
+  labs(title = "Cluster 4 (unsure?) Frequencies") + theme_minimal()
+Cluster_4_gg
+
+Cluster_5 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 5)
+Cluster_5_gg <- ggplot(Cluster_5, aes(x = date, y = Freq)) + geom_col(fill = "#490092") +  
+  labs(title = "Cluster 5 (unsure?) Frequencies") + theme_minimal()
+Cluster_5_gg
+
+Cluster_6 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 6)
+Cluster_6_gg <- ggplot(Cluster_6, aes(x = date, y = Freq)) + geom_col(fill = "#006DDB") +  
+  labs(title = "Cluster 6 (Memory o PB) Frequencies") + theme_minimal()
+Cluster_6_gg
+
+Cluster_7 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 7)
+Cluster_7_gg <- ggplot(Cluster_7, aes(x = date, y = Freq)) + geom_col(fill = "#B66DFF") +  
+  labs(title = "Cluster 7 (Other?) Frequencies") + theme_minimal()
+Cluster_7_gg
+
+Cluster_8 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 8)
+Cluster_8_gg <- ggplot(Cluster_8, aes(x = date, y = Freq)) + geom_col(fill = "#6DB6FF") +  
+  labs(title = "Cluster 8 (Naive) Frequencies") + theme_minimal()
+Cluster_8_gg
+
+Cluster_9 <- Cluster_over_time_filt %>% filter(RNA_snn_res.0.4 == 9)
+Cluster_9_gg <- ggplot(Cluster_9, aes(x = date, y = Freq)) + geom_col(fill = "#B6DBFF") +  
+  labs(title = "Cluster 9 (IgG+ Plasmablasts) Frequencies") + theme_minimal()
+Cluster_9_gg
+```
+
+
+```{r Heatmap Cluster Marker, fig.width=8, fig.height=14}
+top10_genes <- Markers_clusters_filt %>% group_by(cluster) %>%  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scBcells, features = unique(top10_genes$gene), assay = "RNA", slot = "scale.data") + NoLegend()
+
+DotPlot(scBcells, features = unique(top10_genes$gene), group.by = "RNA_snn_res.0.4") + coord_flip()
+
+```

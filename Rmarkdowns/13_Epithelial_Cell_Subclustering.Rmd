@@ -1,0 +1,259 @@
+---
+title: "Epithelial Cells Subclustering"
+author: "Julia Hitschfel"
+date: "2025-11-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SingleCellExperiment)
+library(SingleR)
+library(celldex)
+library(dplyr)
+library(ggplot2)
+library(BPCells)
+library(presto)
+library(glmGamPoi)
+library(hdf5r)
+library(knitr)
+library(pheatmap)
+library(RColorBrewer)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+
+```
+
+## Epithelial Cell Subclustering 
+
+```{r Read in All Cell Seurat Object}
+scobject <- readRDS(file = "integrated_seurat_refined_annotations.rds")
+
+Idents(scobject) <- scobject$SCT_snn_res.0.4
+DimPlot(scobject, reduction = "umap", label = T)
+
+All_Epithelial_comb <- WhichCells(scobject, idents = c(1,4,8,9))
+
+FeaturePlot(scobject, features = "PTPRC", slot = "counts", max.cutoff = 5)
+
+FeaturePlot(scobject, features = "KRT8", slot = "counts", max.cutoff = 5)
+
+FeaturePlot(scobject, features = "KRT18", slot = "counts", max.cutoff = 5)
+```
+
+
+```{r Epithelial Cell Filter}
+genes_to_filter <- c('PTPRC', 'KRT8', 'KRT18')
+Non_Epithelial_Cells <- WhichCells(scobject, expression = PTPRC > 1 | KRT8 < 1 & KRT18 < 1, 
+                                   slot = "counts")
+
+Non_Epithelial_Seurat <- subset(scobject, cells = Non_Epithelial_Cells)
+
+DimPlot(Non_Epithelial_Seurat, reduction = "umap")
+```
+
+
+```{r Other Epithelial Cell Markers}
+FeaturePlot(Non_Epithelial_Seurat, features = "MUC16", slot = "counts", max.cutoff = 5)
+FeaturePlot(Non_Epithelial_Seurat, features = "KRT19", slot = "counts", max.cutoff = 5)
+FeaturePlot(Non_Epithelial_Seurat, features = "MUC1", slot = "counts", max.cutoff = 5)
+FeaturePlot(Non_Epithelial_Seurat, features = "PIGR", slot = "counts", max.cutoff = 5)
+```
+
+
+```{r Epithelial Filters improved}
+Non_Epithelial_Cells_improve <- WhichCells(scobject, expression = PTPRC > 1 | KRT8 < 1 & KRT18 < 1 &
+                                             KRT19 < 1 & PIGR < 1, 
+                                   slot = "counts")
+
+Non_Epithelial_Seurat_improve <- subset(scobject, cells = Non_Epithelial_Cells_improve)
+
+DimPlot(Non_Epithelial_Seurat_improve, reduction = "umap")
+
+FeaturePlot(Non_Epithelial_Seurat_improve, features = "EPCAM", slot = "counts", max.cutoff = 5)
+```
+
+
+```{r Read in Data and filter Epithelial cells}
+All.data <- list.dirs("D:/Sequencing_data/data/", recursive = F)
+
+list.10x <- list()
+counter <- 1
+for(i in All.data){
+  rnaseq.data <- Read10X_h5(paste0(i, "/count/sample_filtered_feature_bc_matrix.h5"))
+  pbmc <- CreateSeuratObject(counts = rnaseq.data, project = "Colitis", min.cells = 3, 
+                             min.features = 200)
+  pbmc <- RenameCells(pbmc, new.names = paste0(colnames(pbmc), "_", counter))
+  pbmc <- subset(pbmc, cells = All_Epithelial_comb)
+  list.10x[[i]] <- pbmc
+  counter <- counter + 1
+}
+
+
+print("Epithelial Cell Numbers before Filtering:")
+for(i in list.10x){print(nrow(i@meta.data))}
+
+for(i in 1:length(list.10x)){  
+  pbmc <- list.10x[[i]]
+  pbmc@meta.data$date <- substr(names(list.10x)[i], 25, 100)
+  ImmuneCells <- WhichCells(pbmc, expression = PTPRC > 0, slot = "counts")
+  Epithelial_Cells <- WhichCells(pbmc, expression = KRT8 > 0 | KRT18 > 0, 
+                                 slot = "counts")
+  if("KRT19" %in% rownames(pbmc@assays$RNA$counts)){
+    KRT19_ECs <- WhichCells(pbmc, expression = KRT19 > 0, slot = "counts")
+  }
+  if(exists("KRT19_ECs")){Epithelial_Cells <- c(Epithelial_Cells, KRT19_ECs)}
+  
+  if("PIGR" %in% rownames(pbmc@assays$RNA$counts)){
+    PIGR_ECs <- WhichCells(pbmc, expression = PIGR > 0, slot = "counts")
+  }
+  if(exists("PIGR_ECs")){Epithelial_Cells <- c(Epithelial_Cells, PIGR_ECs)}
+  ECs_filtered <- setdiff(Epithelial_Cells, ImmuneCells)
+  pbmc <- subset(pbmc, cells = ECs_filtered)
+  pbmc@meta.data$percent.mt <- PercentageFeatureSet(pbmc, pattern = "^MT")
+  pbmc@meta.data$percent.rps <- PercentageFeatureSet(pbmc, pattern = "^RPS")
+  pbmc@meta.data$percent.rpl <- PercentageFeatureSet(pbmc, pattern = "^RPL")
+  pbmc <- SCTransform(pbmc, verbose = FALSE)
+  list.10x[[i]] <- pbmc
+}
+
+print("Epithelial Cell Counts after Filtering:")
+
+for(i in list.10x){print(nrow(i@meta.data))}
+
+integ_features <- SelectIntegrationFeatures(object.list = list.10x, nfeatures = 3000) 
+scEpithelial <- merge(x = list.10x[[1]], y = c(list.10x[2:length(list.10x)]), merge.data = T)
+DefaultAssay(scEpithelial) <- "SCT"
+VariableFeatures(scEpithelial) <- integ_features
+scEpithelial <- RunPCA(scEpithelial, assay = "SCT", npcs = 50)
+
+scEpithelial <- IntegrateLayers(object = scEpithelial, method = CCAIntegration, 
+                            normalization.method = "SCT", verbose = F)
+scEpithelial <- FindNeighbors(scEpithelial, reduction = "integrated.dr", dims = 1:30)
+scEpithelial <- FindClusters(scEpithelial, resolution = c(0.4,0.6,0.8))
+
+scEpithelial <- RunUMAP(scEpithelial, reduction = "integrated.dr", assay = "SCT", 
+                             dims = 1:30)
+
+DimPlot(scEpithelial, reduction = "umap", group.by = "SCT_snn_res.0.6", label = T, 
+        cols = farbenblind15, label.size = 6)
+
+DimPlot(scEpithelial, reduction = "umap", group.by = "SCT_snn_res.0.4", label = T, 
+        cols = farbenblind15, label.size = 6)
+
+DimPlot(scEpithelial, reduction = "umap", group.by = "date")
+DimPlot(scEpithelial, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+
+
+sum_table <- scEpithelial@meta.data %>% group_by(date) %>% 
+  summarise(RNA.count.median = median(nCount_RNA), RNA.feature.median = median(nFeature_RNA), 
+            MT.freq.median = median(percent.mt), RPS.freq.median = median(percent.rps), 
+            RPL.freq.median = median(percent.rpl))
+
+sum_table
+
+```
+
+
+```{r Some QC controls}
+DimPlot(scEpithelial, reduction = "pca") + NoLegend()
+DimPlot(scEpithelial, reduction = "integrated.dr") + NoLegend()
+FeaturePlot(scEpithelial, reduction = "integrated.dr", features = "percent.mt")
+FeaturePlot(scEpithelial, reduction = "integrated.dr", features = "percent.rps")
+FeaturePlot(scEpithelial, reduction = "integrated.dr", features = "percent.rpl")
+FeaturePlot(scEpithelial, features = "nCount_RNA", reduction = "integrated.dr", max.cutoff = 5000) 
+FeaturePlot(scEpithelial, features = "nCount_RNA", reduction = "integrated.dr", dims = c(1,3), 
+            max.cutoff = 5000) + NoLegend()
+
+DimHeatmap(scEpithelial, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+### Cluster Resolution 0.4
+
+```{r Cluster over time resolution 0.4, fig.height=14, fig.width=10 }
+table(scEpithelial@meta.data$date, scEpithelial@meta.data$SCT_snn_res.0.4)
+
+Cluster_over_time_04 <- scEpithelial@meta.data %>% group_by(date, SCT_snn_res.0.4) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_04, aes(x = date, y = Freq, fill = SCT_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+Idents(scEpithelial) <- scEpithelial@meta.data$SCT_snn_res.0.4
+scEpithelial <- PrepSCTFindMarkers(scEpithelial)
+Cluster_marker_04 <- FindAllMarkers(scEpithelial, logfc.threshold = 0.25, min.pct = 0.25, only.pos = T)
+
+top10_genes <- Cluster_marker_04 %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scEpithelial, features = unique(top10_genes$gene), assay = "SCT", slot = "scale.data") +
+  NoLegend()
+
+DotPlot(scEpithelial, features = unique(top10_genes$gene), group.by = "SCT_snn_res.0.4") +
+  coord_flip()
+```
+
+### Cluster Resolution 0.6
+
+```{r Cluster Resolution 0.6, fig.height=14, fig.width=10}
+# Resolution 0.6
+Cluster_over_time_06 <- scEpithelial@meta.data %>% group_by(date, SCT_snn_res.0.6) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_06, aes(x = date, y = Freq, fill = SCT_snn_res.0.6)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+Idents(scEpithelial) <- scEpithelial@meta.data$SCT_snn_res.0.6
+Cluster_marker_06 <- FindAllMarkers(scEpithelial, logfc.threshold = 0.25, min.pct = 0.25, 
+                                    only.pos = T)
+
+top10_genes_06 <- Cluster_marker_06 %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>% 
+  slice_head(n = 10) %>% ungroup()
+
+DoHeatmap(scEpithelial, features = unique(top10_genes$gene), assay = "SCT", slot = "scale.data") +
+  NoLegend()
+
+DotPlot(scEpithelial, features = unique(top10_genes$gene), group.by = "SCT_snn_res.0.6") +
+  coord_flip()
+```
+
+
+```{r singleR Annotation}
+ECsce <- as.SingleCellExperiment(scEpithelial, assay = "SCT")
+ECsce
+ls('package:celldex')
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+unique(ref.set$label.main)
+pred.cnts <- SingleR::SingleR(test = ECsce, ref = ref.set, labels = ref.set$label.fine)
+
+lbls.keep <- table(pred.cnts$labels)>10
+scEpithelial$SingleR.labels <- ifelse(lbls.keep[pred.cnts$labels], pred.cnts$labels, 'Other')
+
+DimPlot(scEpithelial, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+
+# Potential Idents for Res 0.4
+ECs_annotations <- scEpithelial@meta.data %>% group_by(SCT_snn_res.0.4, SingleR.labels) %>% 
+  summarise(potential.ident = n())
+
+ECs_top_ann_04 <- ECs_annotations %>% group_by(SCT_snn_res.0.4) %>% 
+  slice_max(potential.ident, n = 3)
+
+ECs_top_ann_04
+
+# Potential Idents for Res 0.6
+ECs_annotations <- scEpithelial@meta.data %>% group_by(SCT_snn_res.0.6, SingleR.labels) %>% 
+  summarise(potential.ident = n())
+
+ECs_top_ann_06 <- ECs_annotations %>% group_by(SCT_snn_res.0.6) %>% 
+  slice_max(potential.ident, n = 3)
+
+ECs_top_ann_06
+
+Idents(scEpithelial) <- scEpithelial@meta.data$SCT_snn_res.0.4
+saveRDS(scEpithelial, file = "Epithelial_Cells.rds")
+```
+

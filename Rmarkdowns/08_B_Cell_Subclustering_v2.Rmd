@@ -1,0 +1,208 @@
+---
+title: "B_Cell_Subclustering_v2"
+author: "Julia Hitschfel"
+date: "2025-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(scRepertoire)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+```
+
+## Improve B Cell Subclustering with better filters 
+
+
+```{r Positive Markers B cells}
+Bcell_scobject <- readRDS("Bcells_subclustering.rds")
+
+Bcell_scobject <- JoinLayers(Bcell_scobject)
+Idents(Bcell_scobject) <- "RNA_snn_res.0.4"
+
+VlnPlot(Bcell_scobject, features = "CD79A", cols = farbenblind15)
+VlnPlot(Bcell_scobject, features = "CD79A", cols = farbenblind15, layer = "counts", y.max = 5)
+
+CD79A.neg <- WhichCells(Bcell_scobject, expression = CD79A < 1)
+nrow(Bcell_scobject@meta.data)
+
+Bmarker.neg <- WhichCells(Bcell_scobject, expression = CD79A < 1 & CD19 < 1 & MS4A1 < 1)
+Bcells.meta <- Bcell_scobject@meta.data
+Bcells.meta$barcodes <- rownames(Bcells.meta)
+Cluster.B.neg <- Bcells.meta %>% filter(barcodes %in% Bmarker.neg) %>% group_by(RNA_snn_res.0.4) %>%
+  summarise(No.Cells.from.Cluster = n())
+Cluster.totals <- as.data.frame(table(Bcell_scobject@meta.data$RNA_snn_res.0.4))
+colnames(Cluster.totals) <- c("RNA_snn_res.0.4", "Total.Cluster.Count")
+
+Freq.filtered <- left_join(Cluster.B.neg, Cluster.totals, by = "RNA_snn_res.0.4")
+Freq.filtered <- Freq.filtered %>% mutate(Freq.Cells.filtered =
+                                            No.Cells.from.Cluster/Total.Cluster.Count*100)
+
+Freq.filtered
+```
+
+Filter with VDJ Library?
+
+```{r Read in VDJ Data}
+# Read in VDJ Libraries
+all.tps <- list.dirs("D:/Sequencing_data/data/", recursive = F)
+
+contig.path <- "/vdj_b/filtered_contig_annotations.csv"
+contig.list <- list()
+counter <- 1
+
+for(i in all.tps){
+  vdj_b_contig <- read.csv(paste0(i, contig.path))
+  contig.list[[counter]] <- vdj_b_contig
+  counter <- counter + 1
+}
+
+combined.BCR <- combineBCR(contig.list, 
+                           samples = c("2024_07_15",  "2024_11_28", "2025_02_17", 
+                                            "2025_03_07","2025_03_24", "2025_08_06", "2025_10_22"),
+                           removeNA = FALSE, 
+                           removeMulti = FALSE, 
+                           filterMulti = FALSE)
+
+head(combined.BCR[[1]])
+
+```
+
+```{r Filter Bcell scobject for cells with BCR}
+old_BCs <- colnames(Bcell_scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("2024_07_15_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("2024_11_28_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("2025_02_17_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("2025_03_07_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("2025_03_24_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("2025_08_06_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("2025_10_22_",old_BCs), old_BCs) 
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+Bcell_scobject <- RenameCells(Bcell_scobject, new.names = new_BCs)
+
+BCR.barcodes <- vector()
+for(i in 1:length(combined.BCR)){
+  barcodes <- combined.BCR[[i]]$barcode
+  BCR.barcodes <- c(BCR.barcodes, barcodes)
+}
+
+Bcell_scobject <- subset(Bcell_scobject, cells = BCR.barcodes)
+
+nrow(Bcell_scobject@meta.data)
+```
+
+Filtering cells that have an associated B cell receptor leads to a loss of about half of the dataset. Examine which clusters that would reduce: 
+
+```{r B cells with BCR only}
+BCR.Bcells <- Bcell_scobject@meta.data %>% group_by(RNA_snn_res.0.4) %>%
+  summarise(No.Cells.from.Cluster = n())
+
+BCR.Bcells <- left_join(BCR.Bcells, Cluster.totals, by = "RNA_snn_res.0.4")
+Freq.filtered.BCR <- BCR.Bcells %>% mutate(Freq.Cells.retained =
+                                            No.Cells.from.Cluster/Total.Cluster.Count*100)
+Freq.filtered.BCR
+```
+
+
+```{r B cell subclustering re-normalize}
+scobject.BCR <- NormalizeData(Bcell_scobject, normalization.method = "LogNormalize", 
+                              scale.factor = 10000)
+
+scobject.BCR <- FindVariableFeatures(scobject.BCR, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(scobject.BCR), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(scobject.BCR)  + NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE) + NoLegend()
+plot1 + plot2
+
+all.genes <- rownames(scobject.BCR)
+scobject <- ScaleData(scobject.BCR, features = all.genes)
+
+# Cluster after Regression 
+scobject.BCR <- RunPCA(scobject.BCR, features = VariableFeatures(object = scobject.BCR))
+
+# Examine and visualize PCA results a few different ways
+print(scobject.BCR[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(scobject.BCR, dims = 1:2, reduction = "pca")
+DimPlot(scobject.BCR, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(scobject.BCR, reduction = "pca", features = "percent.mt")
+FeaturePlot(scobject.BCR, reduction = "pca", features = "percent.rps")
+FeaturePlot(scobject.BCR, reduction = "pca", features = "percent.rpl")
+
+FeaturePlot(scobject.BCR, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) #+ NoLegend()
+FeaturePlot(scobject.BCR, features = "nCount_RNA", reduction = "pca", dims = c(1,3), 
+            max.cutoff = 5000) + NoLegend()
+
+FeaturePlot(scobject.BCR, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(scobject.BCR, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) + NoLegend()
+
+DimHeatmap(scobject.BCR, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(scobject.BCR, dims = 1:15, cells = 500, balanced = TRUE)
+
+#Cluster the cells
+scobject.BCR <- FindNeighbors(scobject.BCR, dims = 1:25)
+scobject.BCR <- FindClusters(scobject.BCR, resolution = c(0.4, 0.6, 0.8))
+scobject.BCR <- RunUMAP(scobject.BCR, dims = 1:25)
+saveRDS(scobject.BCR, file = "Bcell_subclustering_BCRs.rds")
+
+
+DimPlot(scobject.BCR, reduction = "umap", group.by = "seurat_clusters", label = T)
+DimPlot(scobject.BCR, reduction = "umap", group.by = "date")
+DimPlot(scobject.BCR, reduction = "umap", group.by = "date", split.by = "date", ncol = 3)
+
+BCR.markers <- FindAllMarkers(scobject.BCR, logfc.threshold = 0.25, min.pct = 0.25, only.pos = T)
+```
+
+```{r Markers}
+VlnPlot(scobject.BCR, "MS4A1")
+ 
+VlnPlot(scobject.BCR, "CD19")
+ 
+VlnPlot(scobject.BCR, "MKI67")
+
+VlnPlot(scobject.BCR, "FCRL5")
+
+VlnPlot(scobject.BCR, "CD74")
+
+VlnPlot(scobject.BCR, "CD79A")
+
+VlnPlot(scobject.BCR, "CR2") #CD21
+ 
+VlnPlot(scobject.BCR, "CD24")
+
+VlnPlot(scobject.BCR, "LILRA4")
+ 
+VlnPlot(scobject.BCR, "ITGAX")
+
+
+VlnPlot(scobject.BCR, "IGHG1")
+VlnPlot(scobject.BCR, "IGHA1")
+VlnPlot(scobject.BCR, "JCHAIN")
+
+VlnPlot(scobject.BCR, "CD22")
+VlnPlot(scobject.BCR, "CD27")
+VlnPlot(scobject.BCR, "IGHM")
+VlnPlot(scobject.BCR, "IGHD")
+
+VlnPlot(scobject.BCR, "MZB1")
+VlnPlot(scobject.BCR, "PRDM1")
+VlnPlot(scobject.BCR, "SDC1")
+VlnPlot(scobject.BCR, "TNFRSF13C")
+```

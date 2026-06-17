@@ -1,0 +1,91 @@
+---
+title: "Frequencies Epithelial Cells in all Cells"
+author: "Julia Hitschfel"
+date: "2025-11-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(scRepertoire)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+```
+
+
+```{r Load Data}
+EpithelialCells <- readRDS(file = "Epithelial_Cells_annotated.rds")
+
+All_cells_scobject <- readRDS(file = "integrated_seurat_refined_annotations.rds")
+
+Idents(All_cells_scobject) <- "SCT_snn_res.0.4"
+
+All_cells_TP <- All_cells_scobject@meta.data %>% group_by(date) %>% summarise(All.n = n())
+All_cells_TP
+```
+
+```{r Prepare ECs}
+ECCluster_over_time <- EpithelialCells@meta.data %>% group_by(date, SCT_snn_res.0.4) %>% 
+  summarise(ECs.n = n()) %>% mutate(Freq = ECs.n/sum(ECs.n))
+
+write.csv(ECCluster_over_time, file = "Epithelial_cell_subsets_in_epithelial_cells.csv")
+
+ggplot(ECCluster_over_time, aes(x = date, y = Freq, fill = SCT_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + 
+  theme(title = "Epithelial cell subset proportions within Epithelial cells") + theme_minimal()
+
+# Add Zeros for missing clusters 
+ECClusters <- seq(0,9,1)
+date.list <- list()
+for(i in unique(ECCluster_over_time$date)){
+  ECs_date <- ECCluster_over_time %>% subset(ECCluster_over_time$date == i)
+  if(nrow(ECs_date) < 10){
+    missing_ECClusters <- setdiff(ECClusters, ECs_date$SCT_snn_res.0.4)
+    Zero_Clusters <- data.frame(date = rep(i, length(missing_ECClusters)), 
+                                SCT_snn_res.0.4 = as.factor(missing_ECClusters), 
+                                ECs.n = rep(0, length(missing_ECClusters)),
+                                Freq = rep(0, length(missing_ECClusters)))
+    ECs_date <- rbind(ECs_date, Zero_Clusters)
+  }
+  date.list[[i]] <- ECs_date
+}
+
+ECCluster_over_time <- do.call(rbind, date.list)
+
+# Name T cell clusters
+ECs_cluster_annotations <- data.frame("SCT_snn_res.0.4" = seq(0,9,1), 
+                                        "Annotation" = levels(Idents(EpithelialCells)))
+
+ECCluster_over_time <- merge(ECCluster_over_time, ECs_cluster_annotations, by = "SCT_snn_res.0.4")
+
+# Lineplot
+ggplot(ECCluster_over_time, aes(x = date, y = Freq, group = Annotation, 
+                                 color = Annotation)) + geom_line(linewidth = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of Epithelial Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## Frequencies of Epithelial Cells in Total Cells
+
+```{r Frequencies in total cells}
+# Frequencies in All Cells
+ECCluster_All <- merge(ECCluster_over_time, All_cells_TP, by = "date")
+ECCluster_All_Freq <- ECCluster_All %>% mutate(Freq.All = (ECs.n/All.n)*100)
+write.csv(ECCluster_All_Freq, file = "Epithelial_cell_subsets_in_total_cells.csv")
+ggplot(ECCluster_All_Freq, aes(x = date, y = Freq.All, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+
+ggplot(ECCluster_All_Freq, aes(x = date, y = Freq.All, group = Annotation, 
+                                 color = Annotation)) + geom_line(linewidth = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of All Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```

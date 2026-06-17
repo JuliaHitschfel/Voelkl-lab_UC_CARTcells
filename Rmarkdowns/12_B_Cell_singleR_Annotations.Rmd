@@ -1,0 +1,145 @@
+---
+title: "Bcell_Cluster_Annotation"
+author: "Julia Hitschfel"
+date: "2025-11-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(SingleCellExperiment)
+library(SingleR)
+library(celldex)
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+```
+
+
+## SingleR automatic Annotation for B cells
+
+```{r Load object and transfer into scExperiment object}
+scobject <- readRDS(file = "Bcell_subclustering_BCRs_integrated.rds")
+
+DefaultAssay(scobject) <- "RNA"
+sce <- as.SingleCellExperiment(scobject, assay = "RNA")
+sce
+```
+
+```{r Annotate scExperiment with Cell type labels from celldex ref}
+ls('package:celldex')
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+unique(ref.set$label.main)
+head(unique(ref.set$label.fine))
+pred.cnts <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.main)
+```
+
+```{r Visualize results}
+lbls.keep <- table(pred.cnts$labels)>10
+scobject$SingleR.labels <- ifelse(lbls.keep[pred.cnts$labels], pred.cnts$labels, 'Other')
+
+DimPlot(scobject, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+DimPlot(scobject, reduction='umap', group.by='integrated_snn_res.0.6')
+DimPlot(scobject, reduction='umap', group.by='integrated_snn_res.0.4')
+DimPlot(scobject, reduction='umap', group.by='integrated_snn_res.0.2')
+
+Cluster_labels_06 <- scobject@meta.data %>% group_by(integrated_snn_res.0.6, SingleR.labels) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+```
+
+Main Labels of singleR are not sufficient to annotate B cell subtypes, but at least most cells are annotated as B cells or Pro B cells, which indicates that this is now a clean B cell dataset. 
+
+```{r Use fine labels to distinguish subsets}
+pred.cnts.fine <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.fine)
+lbls.keep.fine <- table(pred.cnts.fine$labels)>10
+scobject$SingleR.labels.fine <- ifelse(lbls.keep.fine[pred.cnts.fine$labels], 
+                                       pred.cnts.fine$labels, 'Other')
+
+DimPlot(scobject, reduction='umap', group.by='SingleR.labels.fine')
+
+Cluster_labels_fine_0.6 <- scobject@meta.data %>% group_by(integrated_snn_res.0.6, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+
+Cluster_labels_fine_0.4 <- scobject@meta.data %>% group_by(integrated_snn_res.0.4, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+
+Cluster_labels_fine_0.2 <- scobject@meta.data %>% group_by(integrated_snn_res.0.2, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+```
+
+
+#Majority Calling and Cluster changes over time
+
+```{r Cluster Annotation}
+Major_cell_type_0.6 <- Cluster_labels_fine_0.6 %>% group_by(integrated_snn_res.0.6) %>%
+  slice_max(autom_labels)
+
+Major_cell_type_0.6$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.6$SingleR.labels.fine),
+       paste0(Major_cell_type_0.6$SingleR.labels.fine, "_2"),
+       Major_cell_type_0.6$SingleR.labels.fine)
+
+Major_cell_type_0.6$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.6$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_0.6$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_0.6$SingleR.labels.fine) - 2)), "_3"),
+       Major_cell_type_0.6$SingleR.labels.fine)
+
+Major_cell_type_0.6$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.6$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_0.6$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_0.6$SingleR.labels.fine) - 2)), "_4"),
+       Major_cell_type_0.6$SingleR.labels.fine)
+
+Major_cell_type_0.6$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.6$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_0.6$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_0.6$SingleR.labels.fine) - 2)), "_5"),
+       Major_cell_type_0.6$SingleR.labels.fine)
+
+Major_cell_type_0.6
+
+Idents(scobject) <- "integrated_snn_res.0.6"
+
+scobject <- RenameIdents(scobject, 
+                         '0' = 'Plasmacells_1',
+                         '1' = 'Plasmacells_2', 
+                         '2' = 'Plasmacells_3',
+                         '3' = 'Plasmacells_4', 
+                         '4' = 'Plasmacells_5', 
+                         '5' = 'Plasmablasts', 
+                         '6' = 'Naive')
+
+DimPlot(scobject, reduction = "umap", cols = farbenblind15,  label = T, 
+        repel = T, label.color = "darkgoldenrod2", label.box = T) 
+
+saveRDS(scobject, file = "Bcell_v5_integrated_singleR_annotations.rds")
+
+Major_cell_type_0.6
+write.csv(Major_cell_type_0.6, file = "Bcells_integrated_singleR_Major_cell_types_res06.csv")
+```
+
+
+```{r Visualize Cell Proportions over time}
+# For Seurat Object without integration
+scobject$Annotation <- Idents(scobject)
+
+Cell_proportions <- scobject@meta.data %>% group_by(date, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+write.csv(Cell_proportions, "/Anteile_Populationen_Immunzellen/B_Cell_subsets_in_Bcells_integrated.csv")
+
+ggplot(Cell_proportions, aes(x = date, y = Freq, fill = Annotation)) + 
+  geom_col(colour = "black") + scale_fill_manual(values = farbenblind15)
+  labs(title = "Cell Proportions over time") + theme_minimal()
+
+ggsave("B_Cell_proportions_time_integrated.pdf", plot = last_plot(), 
+       width = 30, height = 20, units = "cm")
+
+```

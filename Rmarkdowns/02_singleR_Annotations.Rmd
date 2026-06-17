@@ -1,0 +1,211 @@
+---
+title: "Cluster_Annotation"
+author: "Julia Hitschfel"
+date: "2025-08-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(SingleCellExperiment)
+library(SingleR)
+library(celldex)
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r Load object and transfer into scExperiment object}
+scobject <- readRDS(file = "seurat_NOT_integrated.rds")
+integrated_scobject <- readRDS(file = "integrated_seurat.rds")
+
+scobject <- JoinLayers(scobject)
+DefaultAssay(scobject) <- "RNA"
+sce <- as.SingleCellExperiment(scobject, assay = "RNA")
+sce
+
+DefaultAssay(integrated_scobject) <- "SCT"
+sce_int <- as.SingleCellExperiment(integrated_scobject, assay = "SCT")
+sce_int
+```
+
+```{r Annotate scExperiment with Cell type labels from celldex ref}
+ls('package:celldex')
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+unique(ref.set$label.main)
+head(unique(ref.set$label.fine))
+
+pred.cnts <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.main)
+pred.cnts.int <- SingleR::SingleR(test = sce_int, ref = ref.set, labels = ref.set$label.main)
+```
+
+```{r Visualize results}
+lbls.keep <- table(pred.cnts$labels)>10
+scobject$SingleR.labels <- ifelse(lbls.keep[pred.cnts$labels], pred.cnts$labels, 'Other')
+
+DimPlot(scobject, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+DimPlot(scobject, reduction='umap', group.by='RNA_snn_res.0.6')
+DimPlot(scobject, reduction='umap', group.by='RNA_snn_res.0.4')
+
+Cluster_labels_04 <- scobject@meta.data %>% group_by(RNA_snn_res.0.4, SingleR.labels) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+write.csv(Cluster_labels_04, 
+          file = "singleR_labels_seurat_res04.csv")
+
+
+# And finally for the CCA integrated object
+lbls.keep.int <- table(pred.cnts.int$labels)>10
+integrated_scobject$SingleR.labels <- ifelse(lbls.keep.int[pred.cnts.int$labels],
+                                             pred.cnts.int$labels, 'Other')
+
+DimPlot(integrated_scobject, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+DimPlot(integrated_scobject, reduction='umap', group.by='SCT_snn_res.0.6')
+DimPlot(integrated_scobject, reduction='umap', group.by='SCT_snn_res.0.4')
+
+Cluster_labels_int_04 <- integrated_scobject@meta.data %>% 
+  group_by(SCT_snn_res.0.4, SingleR.labels) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+write.csv(Cluster_labels_int_04, 
+          file = "singleR_labels_integ_seurat_res04.csv")
+```
+
+
+```{r Use fine labels to distinguish subsets}
+pred.cnts.fine <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.fine)
+lbls.keep.fine <- table(pred.cnts.fine$labels)>10
+scobject$SingleR.labels.fine <- ifelse(lbls.keep.fine[pred.cnts.fine$labels], 
+                                       pred.cnts.fine$labels, 'Other')
+
+DimPlot(scobject, reduction='umap', group.by='SingleR.labels.fine') + NoLegend()
+DimPlot(scobject, reduction='umap', group.by='SingleR.labels.fine')
+
+
+Cluster_labels_fine_0.8 <- scobject@meta.data %>% group_by(RNA_snn_res.0.8, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+write.csv(Cluster_labels_fine_0.8, 
+          file = "singleR_labels_fine_seurat_res08.csv")
+
+Cluster_labels_fine_0.4 <- scobject@meta.data %>% group_by(RNA_snn_res.0.4, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+write.csv(Cluster_labels_fine_0.4, 
+          file = "singleR_labels_fine_seurat_res04.csv")
+```
+
+
+```{r CCA Integrated Data}
+pred.cnts.int.fine <- SingleR::SingleR(test = sce_int, ref = ref.set, labels = ref.set$label.fine)
+
+lbls.keep.int.fine <- table(pred.cnts.int.fine$labels)>10
+integrated_scobject$SingleR.labels.fine <- ifelse(lbls.keep.int.fine[pred.cnts.int.fine$labels],
+                                     pred.cnts.int.fine$labels, 'Other')
+
+DimPlot(integrated_scobject, reduction='umap', group.by='SingleR.labels.fine') + NoLegend()
+DimPlot(integrated_scobject, reduction='umap', group.by='SCT_snn_res.0.4')
+
+Cluster_labels_int_fine <- integrated_scobject@meta.data %>%
+  group_by(SCT_snn_res.0.4, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+write.csv(Cluster_labels_int_fine,
+          file = "singleR_labels_fine_int_seurat.csv")
+
+```
+
+
+```{r Cluster Annotation}
+Major_cell_type_0.4 <- Cluster_labels_fine_0.4 %>% group_by(RNA_snn_res.0.4) %>%
+  slice_max(autom_labels)
+
+Major_cell_type_0.4$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.4$SingleR.labels.fine),
+       paste0(Major_cell_type_0.4$SingleR.labels.fine, "_2"),
+       Major_cell_type_0.4$SingleR.labels.fine)
+
+Major_cell_type_0.4$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_0.4$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_0.4$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_0.4$SingleR.labels.fine) - 2)), "_3"),
+       Major_cell_type_0.4$SingleR.labels.fine)
+
+Cluster_assignments <- as.data.frame(scobject$RNA_snn_res.0.4)
+colnames(Cluster_assignments) <- "RNA_snn_res.0.4"
+Cluster_names <- left_join(Cluster_assignments, Major_cell_type_0.4, by = "RNA_snn_res.0.4")
+scobject$Annotation <- Cluster_names$SingleR.labels.fine
+Idents(scobject) <- "RNA_snn_res.0.4"
+
+saveRDS(scobject, file = "seurat_singleR_annotations.rds")
+
+DimPlot(scobject, reduction = "umap", label = T) + NoLegend()
+
+Major_cell_type_0.4
+write.csv(Major_cell_type_0.4, 
+          file = "singleR_Major_cell_types_res04.csv")
+```
+
+
+```{r Majority calling for CCA integrated Seurat}
+Major_cell_type_int_fine <- Cluster_labels_int_fine %>% group_by(SCT_snn_res.0.4) %>%
+  slice_max(autom_labels)
+
+Major_cell_type_int_fine$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_int_fine$SingleR.labels.fine),
+       paste0(Major_cell_type_int_fine$SingleR.labels.fine, "_2"),
+       Major_cell_type_int_fine$SingleR.labels.fine)
+
+Major_cell_type_int_fine$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_int_fine$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_int_fine$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_int_fine$SingleR.labels.fine) - 2)), "_3"),
+       Major_cell_type_int_fine$SingleR.labels.fine)
+
+Major_cell_type_int_fine$SingleR.labels.fine <-
+  ifelse(duplicated(Major_cell_type_int_fine$SingleR.labels.fine),
+       paste0(substr(Major_cell_type_int_fine$SingleR.labels.fine, 0,
+                     (nchar(Major_cell_type_int_fine$SingleR.labels.fine) - 2)), "_4"),
+       Major_cell_type_int_fine$SingleR.labels.fine)
+
+Cluster_assignments_int <- as.data.frame(integrated_scobject$SCT_snn_res.0.4)
+colnames(Cluster_assignments_int) <- "SCT_snn_res.0.4"
+Cluster_names_int <- left_join(Cluster_assignments_int, Major_cell_type_int_fine, 
+                               by = "SCT_snn_res.0.4")
+integrated_scobject$Annotation <- Cluster_names_int$SingleR.labels.fine
+Idents(integrated_scobject) <- "SCT_snn_res.0.4"
+
+saveRDS(integrated_scobject, 
+        file = "integrated_seurat_singleR_annotations.rds")
+
+DimPlot(integrated_scobject, reduction = "umap", label = T) + NoLegend()
+DimPlot(integrated_scobject, reduction = "umap", group.by = "Annotation", label = T) + NoLegend()
+
+Major_cell_type_int_fine
+write.csv(Major_cell_type_int_fine, 
+          file = "singleR_Major_cell_types_integrated.csv")
+
+```
+
+
+```{r Visualize Cell Proportions over time}
+# For Seurat Object without integration
+Cell_proportions <- scobject@meta.data %>% group_by(date, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+test <- Cell_proportions %>% group_by(date) %>% summarise(freq_test = sum(Freq))
+test
+
+ggplot(Cell_proportions, aes(x = date, y = Freq, fill = Annotation)) + 
+  geom_col(colour = "black") + labs(title = "Cell Proportions over time") + theme_minimal()
+ggsave("Cell_proportions_time.pdf", plot = last_plot(), 
+       width = 30, height = 20, units = "cm")
+
+# For the CCA Integrated Object
+Cell_proportions_int <- integrated_scobject@meta.data %>% group_by(date, Annotation) %>%
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cell_proportions_int, aes(x = date, y = Freq, fill = Annotation)) +
+  geom_col(colour = "black") + labs(title = "Cell Proportions CCA Integration") +
+theme_minimal()
+
+ggsave("Cell_proportions_time_integrated.pdf",
+       plot = last_plot(), width = 30, height = 20, units = "cm")
+```

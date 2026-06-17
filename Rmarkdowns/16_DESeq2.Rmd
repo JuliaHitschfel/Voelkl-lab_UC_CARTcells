@@ -1,0 +1,1014 @@
+---
+title: "DESeq2"
+author: "Julia Hitschfel"
+date: "2026-01-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(DESeq2)
+library(ggplot2) 
+library(clusterProfiler)
+library(tidyverse)
+library(msigdbr)
+library(ggforce)
+library(ggrepel)
+library(tidytext)
+library(plotly)
+```
+
+## DESeq2 Pseudobulk timepoints
+
+In this script I am generating pseudobulk datensets for the different celltypes and timepoint to do a differential gene expression analysis with DESeq2. The comparison will be between the three timepoints pre CART cell therapy to the four timepoints post CART cell therapy. 
+This will be done for the total dataset first and then for the subclustering datasets of B cells, T cells, and epithelial cells.  
+
+
+```{r Read in Data}
+all.cells.seurat <- readRDS("integrated_seurat_refined_annotations.rds")
+
+all.cells.pseudo <- AggregateExpression(all.cells.seurat, assays = "RNA", 
+                                        group.by = c("date", "Annotations.0.4"), slot = "counts",
+                                        return.seurat = F)
+
+# Manipulate the matrix to fit DESeq2 input
+matrix.t <- t(all.cells.pseudo$RNA)
+count.data.frame <- as.data.frame(matrix.t)
+splitRows <- gsub('.*_', '', rownames(count.data.frame))
+cell.type.list <- split.data.frame(count.data.frame, f = factor(splitRows))
+
+#Retranspose the matrix and fix column names for all elements of the list
+cell.type.list.t <- lapply(cell.type.list, function(x){
+	rownames(x) <- gsub('(.*)_.*', '\\1', rownames(x))
+	t(x)
+})
+
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`T cells-1`))
+
+col.data$treatment <- ifelse(col.data$samples == "g2024-07-15" | col.data$samples == "g2024-11-28" |
+                               col.data$samples == "g2025-02-17", "pre_CART", "post_CART")
+
+# Perform DESeq2 for Tcells-1
+count.data.Tcells1 <- cell.type.list.t$`T cells-1`
+class(count.data.Tcells1) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.Tcells1, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+```
+
+
+```{r DESeq2 for Tcells2}
+# Perform DESeq2 for Tcells-2
+count.data.Tcells2 <- cell.type.list.t$`T cells-2`
+class(count.data.Tcells2) <- "integer"
+
+
+dds.Tcells2 <- DESeqDataSetFromMatrix(countData = count.data.Tcells2, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.Tcells2)) >= 10
+dds.Tcells2 <- dds.Tcells2[keep,]
+
+dds.Tcells2 <- DESeq(dds.Tcells2)
+
+resultsNames(dds.Tcells2)
+
+#Generate results object
+res.Tcells2 <- results(dds.Tcells2, name = "treatment_pre_CART_vs_post_CART")
+res.Tcells2 
+
+res.Tcells2_df <- as.data.frame(res.Tcells2)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.Tcells2_df_sort <- res.Tcells2_df[order(res.Tcells2_df$padj),]
+head(res.Tcells2_df_sort, 20)
+```
+
+
+### DESeq2 for the filtered datasets
+
+Hier verwenden wir nochmal DESeq2 aber auf den einzelnen T Zell und Epithelzell Datensätzen, um zu schauen ob es dort weniger Einfluss von den B Zell Transkripten gibt: 
+
+```{r DESeq2 for T cell data}
+
+Tcells <- readRDS("Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcells.pseudo <- AggregateExpression(Tcells, assays = "RNA", 
+                                        group.by = "date", slot = "counts",
+                                        return.seurat = F)
+
+# Create meta.data for count matrix
+Tcell.numbers <- Tcells@meta.data %>% group_by(date) %>% summarise(Tcell.count = n())
+Tcell.numbers$date <- paste0("g", Tcell.numbers$date)
+Tcell.numbers$treatment <- ifelse(Tcell.numbers$date == "g2024_07_15" | 
+                                    Tcell.numbers$date == "g2024_11_28" |
+                               Tcell.numbers$date == "g2025_02_17", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(Tcell.numbers, aes(x=date, y=Tcell.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of T cells") +
+    geom_text(aes(label=Tcell.count), vjust=-0.5)
+
+# Perform DESeq2 for Tcell pseudobulk
+count.data.Tcells <- as.matrix(Tcells.pseudo$RNA)
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.Tcells)) == T), 
+                    which(grepl("^IGL", rownames(count.data.Tcells)) == T), 
+                    which(grepl("^IGK", rownames(count.data.Tcells)) == T))
+count.data.Tcells.noIG <- count.data.Tcells[-IG.transcripts,]
+class(count.data.Tcells.noIG) <- "integer"
+
+
+dds.Tcells <- DESeqDataSetFromMatrix(countData = count.data.Tcells.noIG, 
+				colData =  Tcell.numbers,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.Tcells)) >= 10
+dds.Tcells <- dds.Tcells[keep,]
+
+dds.Tcells <- DESeq(dds.Tcells)
+
+resultsNames(dds.Tcells)
+
+#Generate results object
+res.Tcells <- results(dds.Tcells, name = "treatment_pre_CART_vs_post_CART")
+res.Tcells 
+
+res.Tcells_df <- as.data.frame(res.Tcells)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.Tcells_df_sort <- res.Tcells_df[order(res.Tcells_df$padj),]
+head(res.Tcells_df_sort, 20)
+
+dir.create(file.path("DESeq2"))
+write.csv(res.Tcells_df_sort, "/DESeq2/DEGs_Tzellen.csv")
+```
+
+## DESeq2 for Epithelial cells
+
+```{r DESeq2 for Epithelial Cells}
+ECs <- readRDS("Epithelial_Cells_annotated.rds")
+
+ECs.pseudo <- AggregateExpression(ECs, assays = "RNA", 
+                                        group.by = "date", slot = "counts",
+                                        return.seurat = F)
+
+# Create meta.data for count matrix
+ECs.numbers <- ECs@meta.data %>% group_by(date) %>% summarise(ECs.count = n())
+ECs.numbers$date <- paste0("g", ECs.numbers$date)
+ECs.numbers$treatment <- ifelse(ECs.numbers$date == "g2024_07_15" | 
+                                    ECs.numbers$date == "g2024_11_28" |
+                               ECs.numbers$date == "g2025_02_17", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(ECs.numbers, aes(x=date, y=ECs.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of Epithelial cells") +
+    geom_text(aes(label=ECs.count), vjust=-0.5)
+
+# Perform DESeq2 for ECs pseudobulk
+count.data.ECs <- as.matrix(ECs.pseudo$RNA)
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.ECs)) == T), 
+                    which(grepl("^IGL", rownames(count.data.ECs)) == T), 
+                    which(grepl("^IGK", rownames(count.data.ECs)) == T))
+count.data.ECs.noIG <- count.data.ECs[-IG.transcripts,]
+
+class(count.data.ECs.noIG) <- "integer"
+
+
+dds.ECs <- DESeqDataSetFromMatrix(countData = count.data.ECs.noIG, 
+				colData =  ECs.numbers,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.ECs)) >= 10
+dds.ECs <- dds.ECs[keep,]
+
+dds.ECs <- DESeq(dds.ECs)
+
+resultsNames(dds.ECs)
+
+#Generate results object
+res.ECs <- results(dds.ECs, name = "treatment_pre_CART_vs_post_CART")
+res.ECs 
+
+res.ECs_df <- as.data.frame(res.ECs)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.ECs_df_sort <- res.ECs_df[order(res.ECs_df$padj),]
+head(res.ECs_df_sort, 20)
+
+write.csv(res.ECs_df_sort, "/DESeq2/DEGs_Epithelzellen.csv")
+```
+
+### Volcano Plot for DEGs Epithelial cells
+
+```{r Create Volcano Plot to explore genes}
+EC.volcano.data <- res.ECs_df
+EC.volcano.data$log10.padj <- -log10(EC.volcano.data$padj)
+EC.volcano.data$diffexpressed <- ifelse(EC.volcano.data$log10.padj > -log10(0.05) & 
+                                        abs(EC.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+EC.volcano.data$gene <- rownames(EC.volcano.data)
+
+# Volcano plot
+EC_volcano_plot <- ggplot(EC.volcano.data, aes(x = log2FoldChange, y = log10.padj, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(adj. P-value)") + 
+  theme_minimal()
+  
+ggplotly(EC_volcano_plot, tooltip = "text")
+```
+
+### Volcano with categories
+
+```{r Labeled volcano plot}
+Inflammation.gene.list <- c("TNF", "IL1A", "IL1B", "IL18", "IL23A", "IL32", "CSF2", "CXCL1", "CXCL3", "CXCL11", "CCL25")
+Secretory.function.gene.list <- c("WFDC2", "CLCA1", "ZG16", "B4GALNT2", "GP2")
+Barrier.dysfunction.gene.list <- c("CLDN1", "CLDN2", "DEFB4A", "LTF", "GPX2", "S100A2", "S100A3", "SOD3", "CA9")
+Mucosal.barrier.gene.list <- c("CLDN15", "ITLN2", "ZG16", "B3GNT6", "ST6GALNAC1", "ST6GALNAC3", "LGALS2")
+
+EC.volcano.data$Category <- ifelse(EC.volcano.data$gene %in% Inflammation.gene.list, "Inflammation/Leukocyte Recruitment", "Other")
+EC.volcano.data$Category <- ifelse(EC.volcano.data$gene %in% Secretory.function.gene.list, "Secretory Function", EC.volcano.data$Category)
+EC.volcano.data$Category <- ifelse(EC.volcano.data$gene %in% Barrier.dysfunction.gene.list, "Barrier Dysfunction", EC.volcano.data$Category)
+EC.volcano.data$Category <- ifelse(EC.volcano.data$gene %in% Mucosal.barrier.gene.list, "Mucosal Barrier Restoration", EC.volcano.data$Category)
+EC.volcano.data$Category <- factor(EC.volcano.data$Category, levels = c("Barrier Dysfunction", "Inflammation/Leukocyte Recruitment", 
+                                                                        "Mucosal Barrier Restoration", "Secretory Function", "Other"))
+
+points_to_label <- subset(EC.volcano.data, Category != "Other")
+
+# Volcano plot
+EC_volcano_plot <- ggplot(EC.volcano.data, aes(x = log2FoldChange, y = log10.padj)) +
+  geom_point(data = subset(EC.volcano.data, Category == "Other"), color = "snow2", size = 1) +
+  geom_point(data = subset(EC.volcano.data, Category == "Barrier Dysfunction"), aes(color = 'Barrier Dysfunction'), size = 1.25) +
+  geom_point(data = subset(EC.volcano.data, Category == "Inflammation/Leukocyte Recruitment"), 
+             aes(color = 'Inflammation/Leukocyte Recruitment'), size = 1.25) +
+  geom_point(data = subset(EC.volcano.data, Category == "Mucosal Barrier Restoration"), 
+             aes(color = 'Mucosal Barrier Restoration'), size = 1.25) +
+  geom_point(data = subset(EC.volcano.data, Category == "Secretory Function"), aes(color = 'Secretory Function'), size = 1.25) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "cornsilk2") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "cornsilk2")  +
+  geom_vline(xintercept = -1, linetype = "dashed", color = "cornsilk2") +
+  geom_text_repel(data = points_to_label, aes(label = gene), color = "black", size = 3) +
+  coord_fixed(ratio = 3.44) +
+      scale_color_manual(name = 'Category', 
+                       breaks = c('Barrier Dysfunction', 'Inflammation/Leukocyte Recruitment', 'Mucosal Barrier Restoration', 
+                                  'Secretory Function'), 
+                       values = c('Barrier Dysfunction' = "darkviolet", 'Mucosal Barrier Restoration' = "dodgerblue1", 
+                                  'Inflammation/Leukocyte Recruitment' ="firebrick1", 'Secretory Function' = "chartreuse4")) +
+  labs(x = expression("Log"[2] ~ "(Fold Change)"), y = expression("-log"[10] ~ "(adj. P-value)")) + 
+  theme_classic()
+
+EC_volcano_plot
+
+dir.create(file.path("Figures"))
+ggsave("/Figures/Volcano_Epithelzellen_Labels.tiff", plot = EC_volcano_plot,
+       device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+```
+
+
+
+## Pre-ranked GSEA with clusterProfiler
+
+Since for T cells the ranking with -log10(adj. p value) creates too many duplicate values, -log10(p value) will be used instead for ranking
+
+### GSEA for T cells
+
+```{r GSEA mir clusterProfiler}
+res.Tcells_df_sort$sign.log.10.p <-
+  sign(res.Tcells_df_sort$log2FoldChange)*(-log10(res.Tcells_df_sort$pvalue))
+res.Tcells_df_sort <- res.Tcells_df_sort %>% filter(!is.na(sign.log.10.p))
+res.Tcells_df_sort <- res.Tcells_df_sort[order(res.Tcells_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_T <- as.vector(res.Tcells_df_sort$sign.log.10.p)
+names(ranked_genes_T) <- rownames(res.Tcells_df_sort)
+
+# Import the MSigDB Hallmark Collection
+hallmark<- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+head(hallmark)
+
+h2 <- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#set seed
+set.seed(123)
+#run GSEA
+Tcell.HALLMARK <- GSEA(ranked_genes_T, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(Tcell.HALLMARK)
+
+print(paste0(Tcell.HALLMARK@result$ID, " - NES:  ", Tcell.HALLMARK@result$NES,  " - padj:  ",
+             Tcell.HALLMARK@result$p.adjust))
+
+Tcell.Hallmark.df <- data.frame(ID = Tcell.HALLMARK@result$ID, 
+                             NES = Tcell.HALLMARK@result$NES, 
+                             padj = Tcell.HALLMARK@result$p.adjust)
+
+Tcell.Hallmark.df <- Tcell.Hallmark.df[order(Tcell.Hallmark.df$NES),]
+Tcell.Hallmark.df$ID <- factor(Tcell.Hallmark.df$ID, levels = Tcell.Hallmark.df$ID)
+
+ggplot(Tcell.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+
+```
+
+### GSEA for T cells with GO and REACTOME and select Gene Sets
+
+```{r GSEA pre-ranked mit GO und REACTOME, fig.width=10, fig.height=8}
+GO_BP <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+GO_BP_t2n <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Tcell.GO.BP <- GSEA(ranked_genes_T, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Tcell.GO.BP.df <- data.frame(ID = Tcell.GO.BP@result$ID, 
+                             NES = Tcell.GO.BP@result$NES, 
+                             padj = Tcell.GO.BP@result$p.adjust)
+
+Tcell.GO.BP.df.top10.up <- Tcell.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+Tcell.GO.BP.df.top10.dn <- Tcell.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.GO.BP.df.top20 <- rbind(Tcell.GO.BP.df.top10.up, Tcell.GO.BP.df.top10.dn)
+
+Tcell.GO.BP.df.top20$ID <- ifelse(Tcell.GO.BP.df.top20$ID ==
+ "GOBP_ADAPTIVE_IMMUNE_RESPONSE_BASED_ON_SOMATIC_RECOMBINATION_OF_IMMUNE_RECEPTORS_BUILT_FROM_IMMUNOGLOBULIN_SUPERFAMILY_DOMAINS", 
+ "GOBP_SOMATIC_RECOMBINATION_OF_IMMUNE_RECEPTORS", Tcell.GO.BP.df.top20$ID)
+
+Tcell.GO.BP.df.top20$ID <- ifelse(Tcell.GO.BP.df.top20$ID ==
+"GOBP_ANTIGEN_PROCESSING_AND_PRESENTATION_OF_EXOGENOUS_PEPTIDE_ANTIGEN_VIA_MHC_CLASS_II",
+ "GOBP_PRESENTATION_OF_EXOGENOUS_PEPTIDE_ANTIGEN_VIA_MHC_CLASS_II", Tcell.GO.BP.df.top20$ID)
+
+Tcell.GO.BP.df.top20 <- Tcell.GO.BP.df.top20[order(Tcell.GO.BP.df.top20$NES),]
+Tcell.GO.BP.df.top20$ID <- factor(Tcell.GO.BP.df.top20$ID, levels = Tcell.GO.BP.df.top20$ID)
+
+ggplot(Tcell.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in T cells")
+
+
+## GSEA mit REACTOME
+REACTOME <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+REACTOME_t2n <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Tcell.REACTOME <- GSEA(ranked_genes_T, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Tcell.REACTOME.df <- data.frame(ID = Tcell.REACTOME@result$ID, 
+                             NES = Tcell.REACTOME@result$NES, 
+                             padj = Tcell.REACTOME@result$p.adjust)
+
+Tcell.REACTOME.df.top10.up <- Tcell.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.REACTOME.df.top10.dn <- Tcell.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.REACTOME.df.top20 <- rbind(Tcell.REACTOME.df.top10.up, Tcell.REACTOME.df.top10.dn)
+
+Tcell.REACTOME.df.top20$ID <- ifelse(Tcell.REACTOME.df.top20$ID ==
+  "REACTOME_IMMUNOREGULATORY_INTERACTIONS_BETWEEN_A_LYMPHOID_AND_A_NON_LYMPHOID_CELL",
+  "REACTOME_IMMUNOREGULATORY_INTERACTIONS_LYMPHOID_AND_NON_LYMPHOID_CELL", Tcell.REACTOME.df.top20$ID)
+
+Tcell.REACTOME.df.top20$ID <- ifelse(Tcell.REACTOME.df.top20$ID ==
+    "REACTOME_ACTIVATION_OF_THE_MRNA_UPON_BINDING_OF_THE_CAP_BINDING_COMPLEX_AND_EIFS_AND_SUBSEQUENT_BINDING_TO_43S",
+    "REACTOME_CAP_DEP_MRNA_ACTIVATION_eIF_AND_43S_BINDING", Tcell.REACTOME.df.top20$ID)
+
+Tcell.REACTOME.df.top20 <- Tcell.REACTOME.df.top20[order(Tcell.REACTOME.df.top20$NES),]
+Tcell.REACTOME.df.top20$ID <- factor(Tcell.REACTOME.df.top20$ID, levels = Tcell.REACTOME.df.top20$ID)
+
+ggplot(Tcell.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in T cells")
+
+```
+
+```{r Bind results and create dotplot, fig.width=8, fig.height=8}
+all.GSEA.T <- rbind(Tcell.Hallmark.df, Tcell.GO.BP.df.top20, Tcell.REACTOME.df.top20)
+all.GSEA.T$DB <- ifelse(grepl("HALLMARK", all.GSEA.T$ID), "HALLMARK", NA)
+all.GSEA.T$DB <- ifelse(grepl("GOBP", all.GSEA.T$ID), "GOBP", all.GSEA.T$DB)
+all.GSEA.T$DB <- ifelse(grepl("REACTOME", all.GSEA.T$ID), "REACTOME", all.GSEA.T$DB)
+all.GSEA.T$DB <- factor(all.GSEA.T$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.T$Status <- ifelse(all.GSEA.T$NES < 0, "post CART", NA)
+all.GSEA.T$Status <- ifelse(all.GSEA.T$NES > 0, "pre CART", all.GSEA.T$Status)
+
+all.GSEA.T.preCAR <- all.GSEA.T %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.T.postCAR <- all.GSEA.T %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.T.top5 <- rbind(all.GSEA.T.preCAR, all.GSEA.T.postCAR)
+all.GSEA.T.top5$Status <- factor(all.GSEA.T.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.T.top5$ID <- gsub("GOBP", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("REACTOME", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("HALLMARK", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("_", " ", all.GSEA.T.top5$ID)
+
+all.GSEA.T.top5 <- all.GSEA.T.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.T.top5.gg <- ggplot2::ggplot(all.GSEA.T.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.T.top5.gg
+
+ggplot2::ggsave("/Figures/GSEA_summary_Tcells.tiff", 
+       plot = All.GSEA.T.top5.gg, device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+```
+
+
+### GSEA for epithelial cells 
+
+```{r GSEA clusterProfiler Epithelzellen, fig.width = 10, fig.height=8}
+res.ECs_df_sort$sign.log.10.p <- sign(res.ECs_df_sort$log2FoldChange)*(-log10(res.ECs_df_sort$pvalue))
+res.ECs_df_sort <- res.ECs_df_sort %>% filter(!is.na(sign.log.10.p))
+res.ECs_df_sort <- res.ECs_df_sort[order(res.ECs_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_EC <- as.vector(res.ECs_df_sort$sign.log.10.p)
+names(ranked_genes_EC) <- rownames(res.ECs_df_sort)
+
+#run GSEA
+EC.HALLMARK <- GSEA(ranked_genes_EC, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(EC.HALLMARK)
+
+print(paste0(EC.HALLMARK@result$ID, " - NES:  ", EC.HALLMARK@result$NES,  " - padj:  ",
+             EC.HALLMARK@result$p.adjust))
+
+EC.Hallmark.df <- data.frame(ID = EC.HALLMARK@result$ID, 
+                             NES = EC.HALLMARK@result$NES, 
+                             padj = EC.HALLMARK@result$p.adjust)
+
+EC.Hallmark.df <- EC.Hallmark.df[order(EC.Hallmark.df$NES),]
+EC.Hallmark.df$ID <- factor(EC.Hallmark.df$ID, levels = EC.Hallmark.df$ID)
+
+EC.Hallmark.df.top10.up <- EC.Hallmark.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.Hallmark.df.top10.dn <- EC.Hallmark.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.Hallmark.df.top20 <- rbind(EC.Hallmark.df.top10.up, EC.Hallmark.df.top10.dn)
+
+ggplot(EC.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "HALLMARK Enrichments for Epithelial Cells")
+
+#run GSEA with GO:BP gene sets
+EC.GO.BP <- GSEA(ranked_genes_EC, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+# head(EC.GO.BP, n = 20)
+
+# print(paste0(EC.GO.BP@result$ID, " - NES:  ", EC.GO.BP@result$NES,  " - padj:  ",
+#              EC.GO.BP@result$p.adjust))
+
+EC.GO.BP.df <- data.frame(ID = EC.GO.BP@result$ID, 
+                             NES = EC.GO.BP@result$NES, 
+                             padj = EC.GO.BP@result$p.adjust)
+
+EC.GO.BP.df.top10.up <- EC.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.GO.BP.df.top10.dn <- EC.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.GO.BP.df.top20 <- rbind(EC.GO.BP.df.top10.up, EC.GO.BP.df.top10.dn)
+
+EC.GO.BP.df.top20$ID <- ifelse(EC.GO.BP.df.top20$ID ==
+ "GOBP_ADAPTIVE_IMMUNE_RESPONSE_BASED_ON_SOMATIC_RECOMBINATION_OF_IMMUNE_RECEPTORS_BUILT_FROM_IMMUNOGLOBULIN_SUPERFAMILY_DOMAINS",
+ "GOBP_SOMATIC_RECOMBINATION_OF_IMMUNE_RECEPTORS", EC.GO.BP.df.top20$ID)
+
+EC.GO.BP.df.top20 <- EC.GO.BP.df.top20[order(EC.GO.BP.df.top20$NES),]
+EC.GO.BP.df.top20$ID <- factor(EC.GO.BP.df.top20$ID, levels = EC.GO.BP.df.top20$ID)
+
+ggplot(EC.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP top 20 enriched gene sets in epithelial cells")
+
+
+#run GSEA with REACTOME on epithelial cells
+EC.REACTOME <- GSEA(ranked_genes_EC, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+EC.REACTOME.df <- data.frame(ID = EC.REACTOME@result$ID, 
+                             NES = EC.REACTOME@result$NES, 
+                             padj = EC.REACTOME@result$p.adjust)
+
+EC.REACTOME.df.top10.up <- EC.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.REACTOME.df.top10.dn <- EC.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.REACTOME.df.top20 <- rbind(EC.REACTOME.df.top10.up, EC.REACTOME.df.top10.dn)
+
+EC.REACTOME.df.top20$ID <- ifelse(EC.REACTOME.df.top20$ID ==
+  "REACTOME_SRP_DEPENDENT_COTRANSLATIONAL_PROTEIN_TARGETING_TO_MEMBRANE",
+  "REACTOME_SRP_DEPENDENT_PROTEIN_TARGETING_TO_MEMBRANE", EC.REACTOME.df.top20$ID)
+
+EC.REACTOME.df.top20 <- EC.REACTOME.df.top20[order(EC.REACTOME.df.top20$NES),]
+EC.REACTOME.df.top20$ID <- factor(EC.REACTOME.df.top20$ID, levels = EC.REACTOME.df.top20$ID)
+
+ggplot(EC.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME top 20 enriched gene sets in epithelial cells")
+
+## GSEA with selected datasets
+mucosal_healing <- 
+  read.gmt("/references/MSigDB_GMTs/custom_genesets_mucosal_healing.gmt")
+
+Fenton_UC_up <- read.gmt("/references/MSigDB_GMTs/custom_genesets_Fenton_UC.gmt")
+
+Fenton_Control_up <- 
+  read.gmt("/references/MSigDB_GMTs/custom_genesets_Fenton_Control.gmt")
+
+Fenton_Remission_up <- 
+  read.gmt("/references/MSigDB_GMTs/custom_genesets_Fenton_Remission.gmt")
+
+#run GSEA with custom mucosal healing gene sets
+EC.mucosal.healing <- GSEA(ranked_genes_EC, TERM2GENE = mucosal_healing, seed=TRUE)
+
+head(EC.mucosal.healing, n = 20)
+
+print(paste0(EC.mucosal.healing@result$ID, " - NES:  ",
+              EC.mucosal.healing@result$NES,  " - padj:  ",
+             EC.mucosal.healing@result$p.adjust))
+
+EC.mucosal.healing.df <- data.frame(ID = EC.mucosal.healing@result$ID, 
+                             NES = EC.mucosal.healing@result$NES, 
+                             padj = EC.mucosal.healing@result$p.adjust)
+
+ggplot(EC.mucosal.healing.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + ylim(-2,2) +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "Mucosal healing enriched gene sets in epithelial cells")
+
+
+#run GSEA with Fenton et al. UC gene set
+EC.Fenton.UC <- GSEA(ranked_genes_EC, TERM2GENE = Fenton_UC_up, seed=TRUE)
+
+head(EC.Fenton.UC, n = 20)
+
+print(paste0(EC.Fenton.UC@result$ID, " - NES:  ",
+              EC.Fenton.UC@result$NES,  " - padj:  ",
+             EC.Fenton.UC@result$p.adjust))
+
+EC.Fenton.UC.df <- data.frame(ID = EC.Fenton.UC@result$ID, 
+                             NES = EC.Fenton.UC@result$NES, 
+                             padj = EC.Fenton.UC@result$p.adjust)
+
+ggplot(EC.Fenton.UC.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + ylim(-2.5,2.5) + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "Gene sets enriched in UC from Fenton et al. in epithelial cells")
+
+
+#run GSEA with Fenton et al. UC in remission gene set
+EC.Fenton.Remission <- GSEA(ranked_genes_EC, TERM2GENE = Fenton_Remission_up, seed=TRUE)
+
+head(EC.Fenton.Remission, n = 20)
+
+print(paste0(EC.Fenton.Remission@result$ID, " - NES:  ",
+              EC.Fenton.Remission@result$NES,  " - padj:  ",
+             EC.Fenton.Remission@result$p.adjust))
+
+EC.Fenton.Remission.df <- data.frame(ID = EC.Fenton.Remission@result$ID, 
+                             NES = EC.Fenton.Remission@result$NES, 
+                             padj = EC.Fenton.Remission@result$p.adjust)
+
+ggplot(EC.Fenton.Remission.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + ylim(-2,2) +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "Gene sets enriched in UC remission from Fenton et al. in epithelial cells")
+
+
+#run GSEA with Fenton et al. Healthy gene set
+EC.Fenton.Healthy <- GSEA(ranked_genes_EC, TERM2GENE = Fenton_Control_up, seed=TRUE)
+
+head(EC.Fenton.Healthy, n = 20)
+
+print(paste0(EC.Fenton.Healthy@result$ID, " - NES:  ",
+              EC.Fenton.Healthy@result$NES,  " - padj:  ",
+             EC.Fenton.Healthy@result$p.adjust))
+
+EC.Fenton.Healthy.df <- data.frame(ID = EC.Fenton.Healthy@result$ID, 
+                             NES = EC.Fenton.Healthy@result$NES, 
+                             padj = EC.Fenton.Healthy@result$p.adjust)
+
+ggplot(EC.Fenton.Healthy.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + ylim(-2,2) +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "Gene sets enriched in healthy vs UC from Fenton et al. in epithelial cells")
+```
+
+
+```{r GSEA summary plot Epithelzellen, fig.width=8, fig.height=8}
+all.GSEA.EC <- rbind(EC.Hallmark.df.top20, EC.GO.BP.df.top20)
+all.GSEA.EC$DB <- ifelse(grepl("HALLMARK", all.GSEA.EC$ID), "HALLMARK", NA)
+all.GSEA.EC$DB <- ifelse(grepl("GOBP", all.GSEA.EC$ID), "GOBP", all.GSEA.EC$DB)
+all.GSEA.EC$DB <- factor(all.GSEA.EC$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.EC$Status <- ifelse(all.GSEA.EC$NES < 0, "post CART", NA)
+all.GSEA.EC$Status <- ifelse(all.GSEA.EC$NES > 0, "pre CART", all.GSEA.EC$Status)
+all.GSEA.EC$Status <- factor(all.GSEA.EC$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.EC$ID <- gsub("GOBP", "", all.GSEA.EC$ID)
+all.GSEA.EC$ID <- gsub("HALLMARK", "", all.GSEA.EC$ID)
+all.GSEA.EC$ID <- gsub("_", " ", all.GSEA.EC$ID)
+
+all.GSEA.EC <- all.GSEA.EC %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.EC.gg <- ggplot2::ggplot(all.GSEA.EC, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.EC.gg
+
+ggplot2::ggsave("/Figures/GSEA_summary_Epithelial_cells.tiff",
+       plot = All.GSEA.EC.gg, device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+```
+
+## GSEA for TPH and regulatory T cells
+
+```{r DEG und GSEA für T Zell Subsets}
+Tcells$Annotation <- Idents(Tcells)
+Tcells.subpop.pseudo <- AggregateExpression(Tcells, assays = "RNA", 
+                                        group.by = c("date", "Annotation"), slot = "counts",
+                                        return.seurat = F)
+
+# Manipulate the matrix to fit DESeq2 input
+matrix.t <- t(Tcells.subpop.pseudo$RNA)
+
+count.data.frame <- as.data.frame(matrix.t)
+splitRows <- gsub('.*_', '', rownames(count.data.frame))
+cell.type.list <- split.data.frame(count.data.frame, f = factor(splitRows))
+
+#Retranspose the matrix and fix column names for all elements of the list
+cell.type.list.t <- lapply(cell.type.list, function(x){
+	rownames(x) <- gsub('(.*)_.*', '\\1', rownames(x))
+ 	t(x)
+ })
+
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`Treg-1`))
+
+col.data$treatment <- ifelse(col.data$samples == "g2024-07-15" | col.data$samples == "g2024-11-28" |
+                               col.data$samples == "g2025-02-17", "pre_CART", "post_CART")
+
+# Perform DESeq2 for Treg1 cells
+count.data.Treg1 <- cell.type.list.t$`Treg-1`
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.Treg1)) == T), 
+                    which(grepl("^IGL", rownames(count.data.Treg1)) == T), 
+                    which(grepl("^IGK", rownames(count.data.Treg1)) == T))
+count.data.Treg1 <- count.data.Treg1[-IG.transcripts,]
+class(count.data.Treg1) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.Treg1, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+
+
+res_df_sort$sign.log.10.p <-
+  sign(res_df_sort$log2FoldChange)*(-log10(res_df_sort$pvalue))
+res_df_sort <- res_df_sort %>% filter(!is.na(sign.log.10.p))
+res_df_sort <- res_df_sort[order(res_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_T <- as.vector(res_df_sort$sign.log.10.p)
+names(ranked_genes_T) <- rownames(res_df_sort)
+
+Treg1.volcano.data <- res_df_sort
+Treg1.volcano.data$log10.pvalue <- -log10(Treg1.volcano.data$pvalue)
+Treg1.volcano.data$diffexpressed <- ifelse(Treg1.volcano.data$log10.pvalue > -log10(0.05) & 
+                                        abs(Treg1.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+Treg1.volcano.data$gene <- rownames(Treg1.volcano.data)
+
+# Volcano plot
+Treg1_volcano_plot <- ggplot(Treg1.volcano.data, aes(x = log2FoldChange, y = log10.pvalue, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(P-value)") + 
+  theme_minimal()
+
+ggplotly(Treg1_volcano_plot, tooltip = "text")
+```
+
+
+```{r Run GSEA for Treg1, fig.height=8, fig.width =10}
+#run GSEA
+Tcell.GOBP <- GSEA(ranked_genes_T, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Tcell.GOBP.df <- data.frame(ID = Tcell.GOBP@result$ID, 
+                             NES = Tcell.GOBP@result$NES, 
+                             padj = Tcell.GOBP@result$p.adjust)
+
+Tcell.GOBP.df.top10.up <- Tcell.GOBP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.GOBP.df.top10.dn <- Tcell.GOBP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.GOBP.df.top20 <- rbind(Tcell.GOBP.df.top10.up, Tcell.GOBP.df.top10.dn)
+
+Tcell.GOBP.df.top20$ID <- ifelse(Tcell.GOBP.df.top20$ID ==
+ "GOBP_POSITIVE_REGULATION_OF_PRODUCTION_OF_MOLECULAR_MEDIATOR_OF_IMMUNE_RESPONSE",
+ "GOBP_POS_REGULATION_PRODUCTION_OF_MEDIATORS_IMMUNE_RESPONSE", Tcell.GOBP.df.top20$ID)
+
+Tcell.GOBP.df.top20 <- Tcell.GOBP.df.top20[order(Tcell.GOBP.df.top20$NES),]
+Tcell.GOBP.df.top20$ID <- factor(Tcell.GOBP.df.top20$ID, levels = Tcell.GOBP.df.top20$ID)
+
+ggplot(Tcell.GOBP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GOBP Top 20 enriched Gene Sets in T cells")
+
+
+Tcell.REACTOME <- GSEA(ranked_genes_T, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Tcell.REACTOME.df <- data.frame(ID = Tcell.REACTOME@result$ID, 
+                             NES = Tcell.REACTOME@result$NES, 
+                             padj = Tcell.REACTOME@result$p.adjust)
+
+Tcell.REACTOME.df.top10.up <- Tcell.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.REACTOME.df.top10.dn <- Tcell.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.REACTOME.df.top20 <- rbind(Tcell.REACTOME.df.top10.up, Tcell.REACTOME.df.top10.dn)
+
+Tcell.REACTOME.df.top20 <- Tcell.REACTOME.df.top20[order(Tcell.REACTOME.df.top20$NES),]
+Tcell.REACTOME.df.top20$ID <- factor(Tcell.REACTOME.df.top20$ID, levels = Tcell.REACTOME.df.top20$ID)
+
+ggplot(Tcell.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in T cells")
+```
+
+```{r check for Treg2}
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`Treg-2`))
+
+col.data$treatment <- ifelse(col.data$samples == "g2024-07-15" | col.data$samples == "g2024-11-28" |
+                               col.data$samples == "g2025-02-17", "pre_CART", "post_CART")
+
+# Perform DESeq2 for Treg2 cells
+count.data.Treg2 <- cell.type.list.t$`Treg-2`
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.Treg2)) == T), 
+                    which(grepl("^IGL", rownames(count.data.Treg2)) == T), 
+                    which(grepl("^IGK", rownames(count.data.Treg2)) == T))
+count.data.Treg2 <- count.data.Treg2[-IG.transcripts,]
+class(count.data.Treg2) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.Treg2, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+
+
+res_df_sort$sign.log.10.p <-
+  sign(res_df_sort$log2FoldChange)*(-log10(res_df_sort$pvalue))
+res_df_sort <- res_df_sort %>% filter(!is.na(sign.log.10.p))
+res_df_sort <- res_df_sort[order(res_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_T <- as.vector(res_df_sort$sign.log.10.p)
+names(ranked_genes_T) <- rownames(res_df_sort)
+
+# Volcano Plot
+Treg2.volcano.data <- res_df_sort
+Treg2.volcano.data$log10.pvalue <- -log10(Treg2.volcano.data$pvalue)
+Treg2.volcano.data$diffexpressed <- ifelse(Treg2.volcano.data$log10.pvalue > -log10(0.05) & 
+                                        abs(Treg2.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+Treg2.volcano.data$gene <- rownames(Treg2.volcano.data)
+
+# Volcano plot
+Treg2_volcano_plot <- ggplot(Treg2.volcano.data, aes(x = log2FoldChange, y = log10.pvalue, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(P-value)") + 
+  theme_minimal()
+
+ggplotly(Treg2_volcano_plot, tooltip = "text")
+
+```
+
+
+```{r Run GSEA for Treg2 cluster, fig.height = 8, fig.width = 10}
+#run GSEA
+Tcell.GOBP <- GSEA(ranked_genes_T, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Tcell.GOBP.df <- data.frame(ID = Tcell.GOBP@result$ID, 
+                             NES = Tcell.GOBP@result$NES, 
+                             padj = Tcell.GOBP@result$p.adjust)
+
+Tcell.GOBP.df.top10.up <- Tcell.GOBP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.GOBP.df.top10.dn <- Tcell.GOBP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.GOBP.df.top20 <- rbind(Tcell.GOBP.df.top10.up, Tcell.GOBP.df.top10.dn)
+
+Tcell.GOBP.df.top20 <- Tcell.GOBP.df.top20[order(Tcell.GOBP.df.top20$NES),]
+Tcell.GOBP.df.top20$ID <- factor(Tcell.GOBP.df.top20$ID, levels = Tcell.GOBP.df.top20$ID)
+
+ggplot(Tcell.GOBP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GOBP Top 20 enriched Gene Sets in T cells")
+
+#run GSEA
+Tcell.REACTOME <- GSEA(ranked_genes_T, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Tcell.REACTOME.df <- data.frame(ID = Tcell.REACTOME@result$ID, 
+                             NES = Tcell.REACTOME@result$NES, 
+                             padj = Tcell.REACTOME@result$p.adjust)
+
+Tcell.REACTOME.df.top10.up <- Tcell.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.REACTOME.df.top10.dn <- Tcell.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.REACTOME.df.top20 <- rbind(Tcell.REACTOME.df.top10.up, Tcell.REACTOME.df.top10.dn)
+
+Tcell.REACTOME.df.top20 <- Tcell.REACTOME.df.top20[order(Tcell.REACTOME.df.top20$NES),]
+Tcell.REACTOME.df.top20$ID <- factor(Tcell.REACTOME.df.top20$ID, levels = Tcell.REACTOME.df.top20$ID)
+
+ggplot(Tcell.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in T cells")
+```
+
+
+```{r Compare TPH pre and post CART}
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`TPH-like`))
+
+col.data$treatment <- ifelse(col.data$samples == "g2024-07-15" | col.data$samples == "g2024-11-28" |
+                               col.data$samples == "g2025-02-17", "pre_CART", "post_CART")
+
+# Perform DESeq2 for TPH-like cells
+count.data.TPH <- cell.type.list.t$`TPH-like`
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.TPH)) == T), 
+                    which(grepl("^IGL", rownames(count.data.TPH)) == T), 
+                    which(grepl("^IGK", rownames(count.data.TPH)) == T))
+count.data.TPH <- count.data.TPH[-IG.transcripts,]
+class(count.data.TPH) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.TPH, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+
+
+res_df_sort$sign.log.10.p <-
+  sign(res_df_sort$log2FoldChange)*(-log10(res_df_sort$pvalue))
+res_df_sort <- res_df_sort %>% filter(!is.na(sign.log.10.p))
+res_df_sort <- res_df_sort[order(res_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_T <- as.vector(res_df_sort$sign.log.10.p)
+names(ranked_genes_T) <- rownames(res_df_sort)
+
+# Volcano Plot
+TPH.volcano.data <- res_df_sort
+TPH.volcano.data$log10.pvalue <- -log10(TPH.volcano.data$pvalue)
+TPH.volcano.data$diffexpressed <- ifelse(TPH.volcano.data$log10.pvalue > -log10(0.05) & 
+                                        abs(TPH.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+TPH.volcano.data$gene <- rownames(TPH.volcano.data)
+
+# Volcano plot
+TPH_volcano_plot <- ggplot(TPH.volcano.data, aes(x = log2FoldChange, y = log10.pvalue, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(P-value)") + 
+  theme_minimal()
+
+ggplotly(TPH_volcano_plot, tooltip = "text")
+```
+
+
+```{r Run GSEA for TPH like cells, fig.width=10, fig.height=8}
+#run GSEA
+Tcell.GOBP <- GSEA(ranked_genes_T, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Tcell.GOBP.df <- data.frame(ID = Tcell.GOBP@result$ID, 
+                             NES = Tcell.GOBP@result$NES, 
+                             padj = Tcell.GOBP@result$p.adjust)
+
+Tcell.GOBP.df.top10.up <- Tcell.GOBP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.GOBP.df.top10.dn <- Tcell.GOBP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.GOBP.df.top20 <- rbind(Tcell.GOBP.df.top10.up, Tcell.GOBP.df.top10.dn)
+
+Tcell.GOBP.df.top20 <- Tcell.GOBP.df.top20[order(Tcell.GOBP.df.top20$NES),]
+Tcell.GOBP.df.top20$ID <- factor(Tcell.GOBP.df.top20$ID, levels = Tcell.GOBP.df.top20$ID)
+
+ggplot(Tcell.GOBP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GOBP Top 20 enriched Gene Sets in T cells")
+
+#run GSEA
+Tcell.REACTOME <- GSEA(ranked_genes_T, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Tcell.REACTOME.df <- data.frame(ID = Tcell.REACTOME@result$ID, 
+                             NES = Tcell.REACTOME@result$NES, 
+                             padj = Tcell.REACTOME@result$p.adjust)
+
+Tcell.REACTOME.df.top10.up <- Tcell.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.REACTOME.df.top10.dn <- Tcell.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.REACTOME.df.top20 <- rbind(Tcell.REACTOME.df.top10.up, Tcell.REACTOME.df.top10.dn)
+
+Tcell.REACTOME.df.top20 <- Tcell.REACTOME.df.top20[order(Tcell.REACTOME.df.top20$NES),]
+Tcell.REACTOME.df.top20$ID <- factor(Tcell.REACTOME.df.top20$ID, levels = Tcell.REACTOME.df.top20$ID)
+
+ggplot(Tcell.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in T cells")
+```

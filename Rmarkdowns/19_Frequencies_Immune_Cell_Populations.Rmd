@@ -1,0 +1,316 @@
+---
+title: "Cell Frequencies in Immune Cells and Total Cells"
+author: "Julia Hitschfel"
+date: "2025-11-19"
+output: html_document
+---
+
+Since some cells were filtered out in the pre-processing steps for the B, T, and myeloid cell subclustering, these cells will be also removed when calculating the frequencies in immune cells of the subpopulations. 
+Filtering will be done by identifying the barcodes of cells that remained in the subclustering analyses and correcting for the cells that were in immune cell clusters in the complete dataset but were filtered out during processing. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(scRepertoire)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+```
+
+```{r Import Data}
+Bcell_scobject <- readRDS(file = "Bcell_v3_singleR_annotations.rds")
+
+Tcell_scobject <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+All_cells_scobject <- readRDS(file = "integrated_seurat_refined_annotations.rds")
+
+levels(Idents(All_cells_scobject))
+
+PTPRC_pos <- subset(All_cells_scobject, subset = PTPRC > 0)
+PTPRC_pos_TP <- PTPRC_pos@meta.data %>% group_by(date) %>% summarise(PTPRC.n = n())
+PTPRC_pos_TP
+
+# Since Barcodes of B and T cell subclustering were modified while adding the VDJ data, the barcodes for the total dataset will be modified to match the barcodes from subclustering analyses of adaptive immune cells.  
+old_BCs <- colnames(All_cells_scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("2024_07_15_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("2024_11_28_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("2025_02_17_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("2025_03_07_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("2025_03_24_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("2025_08_06_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("2025_10_22_",old_BCs), old_BCs) 
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+All_cells_scobject <- RenameCells(All_cells_scobject, new.names = new_BCs)
+
+ImmuneCellBCs <- WhichCells(All_cells_scobject, 
+                            idents = c("T cells_1", "Monocytes", "T cells_2", "Mast Cells", 
+                                       "B cells", "Myeloid Cells"))
+Tcells_in_total <- WhichCells(All_cells_scobject, idents = c("T cells_1", "T cells_2"))
+Tcells_in_total_filtered_in_subclust <- setdiff(Tcells_in_total, rownames(Tcell_scobject@meta.data))
+
+# For T cells, 575 cells from the two T cell clusters were filtered during subclustering analysis. 
+# These barcodes will be removed from ImmuneCellBCs. 
+
+ImmuneCellBCs_Tcellfilt <- setdiff(ImmuneCellBCs, Tcells_in_total_filtered_in_subclust)
+
+# Filtering for B cells. Initially, B cell subclustering included Cluster 1 and 9 (predominantly epithelial cells) and Cluster 12 (myeloid cells) because few cells in these clusters expressed B cell marker genes. Thus, we will check if there is a substantial presence of cells from these clusters that remained in the B cell subclustering analysis. 
+# Cluster 1 corresponds to Intestinal Epithelial Cells_1 and Cluster 9 to Intestinal Epithelial Cells_2
+Bcells_in_epithelial <- WhichCells(All_cells_scobject, idents = c("Intestinal Epithelial Cells_1", 
+                                                                  "Intestinal Epithelial Cells_2"))
+Bcells_in_epithelial <- intersect(Bcells_in_epithelial, rownames(Bcell_scobject@meta.data))
+# There are 543 B cells present in the subclustering that are derived from an annotated epithelial cell cluster. These will be taken into acccount when calculating the frequencies of subpopulations in immune cells. 
+ImmuneCellBCs_Bcells_in_Epi <- c(ImmuneCellBCs_Tcellfilt, Bcells_in_epithelial)
+
+Bcell_clusters <- WhichCells(All_cells_scobject, idents = c("B cells"))
+Bcell_clusters_filt <- setdiff(Bcell_clusters, rownames(Bcell_scobject@meta.data))
+# 365 cells that were present in the annotated B cell cluster of the total dataset were filtered out from subclustering. These cells will be excluded from this calculation. 
+ImmuneCellBCs_final <- setdiff(ImmuneCellBCs_Bcells_in_Epi, Bcell_clusters_filt)
+
+Immune_cells <- subset(All_cells_scobject, cells = ImmuneCellBCs_final)
+Immune_cells_TP <- Immune_cells@meta.data %>% group_by(date) %>% summarise(Immune.n = n())
+Immune_cells_TP
+
+All_cells_TP <- All_cells_scobject@meta.data %>% group_by(date) %>% summarise(All.n = n())
+All_cells_TP
+```
+
+
+```{r Correlation Immune Cells and PTPRC+ cells}
+PTPRC_Immune <- merge(PTPRC_pos_TP, Immune_cells_TP, by = "date")
+print("Correlation PTPRC+ Cells and Immune Cell Numbers:")
+cor(PTPRC_Immune$PTPRC.n, PTPRC_Immune$Immune.n)
+print("Correlation PTPRC+ Cells and Total Cell Numbers:")
+cor(PTPRC_pos_TP$PTPRC.n, All_cells_TP$All.n)
+print("Correlation Immune Cells and Total Cell Numbers:")
+cor(Immune_cells_TP$Immune.n, All_cells_TP$All.n)
+```
+
+## T cell subpopulations within T cells
+
+```{r T cell subcluster proportions}
+TCluster_over_time <- Tcell_scobject@meta.data %>% group_by(date, SCT_snn_res.0.6) %>% 
+  summarise(Tcell.n = n()) %>% mutate(Freq = Tcell.n/sum(Tcell.n))
+
+ggplot(TCluster_over_time, aes(x = date, y = Freq, fill = SCT_snn_res.0.6)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + 
+  theme(title = "T cell subset proportions within T cells") + theme_minimal()
+
+# Add Zeros for missing clusters 
+TClusters <- seq(0,10,1)
+date.list <- list()
+for(i in unique(TCluster_over_time$date)){
+  Tcell_date <- TCluster_over_time %>% subset(TCluster_over_time$date == i)
+  if(nrow(Tcell_date) < 11){
+    missing_TClusters <- setdiff(TClusters, Tcell_date$RNA_snn_res.0.4)
+    Zero_Clusters <- data.frame(date = rep(i, length(missing_TClusters)), 
+                                RNA_snn_res.0.4 = as.factor(missing_TClusters), 
+                                Tcell.n = rep(0, length(missing_TClusters)),
+                                Freq = rep(0, length(missing_TClusters)))
+    Tcell_date <- rbind(Tcell_date, Zero_Clusters)
+  }
+  date.list[[i]] <- Tcell_date
+}
+
+TCluster_over_time <- do.call(rbind, date.list)
+
+# Name T cell clusters
+Tcell_cluster_annotations <- data.frame("SCT_snn_res.0.6" = seq(0,10,1), 
+                                        "Annotation" = levels(Idents(Tcell_scobject)))
+
+TCluster_over_time <- merge(TCluster_over_time, Tcell_cluster_annotations, by = "SCT_snn_res.0.6")
+
+# Lineplot
+ggplot(TCluster_over_time, aes(x = date, y = Freq, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of T Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
+## T cell subpopulations within CD45 expressing cells
+
+```{r Barplot T cell subpopulations in CD45+ cells}
+# Frequencies in PTPRC+ cells
+TCluster_PTPRC <- merge(TCluster_over_time, PTPRC_pos_TP, by = "date")
+TCluster_PTPRC_Freq <- TCluster_PTPRC %>% mutate(Freq.PTPRC = (Tcell.n/PTPRC.n)*100)
+write.csv(TCluster_PTPRC_Freq, "Tcells_in_CD45pos.csv")
+ggplot(TCluster_PTPRC_Freq, aes(x = date, y = Freq.PTPRC, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+
+```{r T cell subpopulations in CD45+ cells}
+ggplot(TCluster_PTPRC_Freq, aes(x = date, y = Freq.PTPRC, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of CD45+ Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## T cell subpopulations within immune cells
+
+```{r T cell subpopulations in immune cells}
+# Frequencies in Immune Cell Clusters 
+TCluster_Immune <- merge(TCluster_over_time, Immune_cells_TP, by = "date")
+TCluster_Immune_Freq <- TCluster_Immune %>% mutate(Freq.Immune = (Tcell.n/Immune.n)*100)
+write.csv(TCluster_Immune_Freq, "Tcells_in_Immune.csv")
+ggplot(TCluster_Immune_Freq, aes(x = date, y = Freq.Immune, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+```{r T cell subpopulations lineplot}
+ggplot(TCluster_Immune_Freq, aes(x = date, y = Freq.Immune, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of Immune Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## T cell subpopulationen in all cells
+
+```{r T frequencies in all cells}
+# Frequencies in All Cells
+TCluster_All <- merge(TCluster_over_time, All_cells_TP, by = "date")
+TCluster_All_Freq <- TCluster_All %>% mutate(Freq.All = (Tcell.n/All.n)*100)
+write.csv(TCluster_All_Freq, "Tcells_in_Total.csv")
+ggplot(TCluster_All_Freq, aes(x = date, y = Freq.All, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+```{r T cells in all cells lineplot}
+ggplot(TCluster_All_Freq, aes(x = date, y = Freq.All, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of All Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## B cell subpopulationen over time
+
+```{r B cell subpopulation in B cells}
+Bcell_scobject@meta.data$Annotation <- Idents(Bcell_scobject)
+BCluster_over_time <- Bcell_scobject@meta.data %>% group_by(date, RNA_snn_res.0.4) %>% 
+  summarise(Bcell.n = n()) %>% mutate(Freq = Bcell.n/sum(Bcell.n))
+
+ggplot(BCluster_over_time, aes(x = date, y = Freq, fill = RNA_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+# Add Zeros for missing clusters 
+BClusters <- seq(0,6,1)
+date.list <- list()
+for(i in unique(BCluster_over_time$date)){
+  Bcell_date <- BCluster_over_time %>% subset(BCluster_over_time$date == i)
+  if(nrow(Bcell_date) < 7){
+    missing_BClusters <- setdiff(BClusters, Bcell_date$RNA_snn_res.0.4)
+    Zero_Clusters <- data.frame(date = rep(i, length(missing_BClusters)), 
+                                RNA_snn_res.0.4 = as.factor(missing_BClusters), 
+                                Bcell.n = rep(0, length(missing_BClusters)),
+                                Freq = rep(0, length(missing_BClusters)))
+    Bcell_date <- rbind(Bcell_date, Zero_Clusters)
+  }
+  date.list[[i]] <- Bcell_date
+}
+
+BCluster_over_time <- do.call(rbind, date.list)
+
+# Name B cell clusters
+Bcell_cluster_annotations <- data.frame("RNA_snn_res.0.4" = seq(0,6,1), 
+                                        "Annotation" = levels(Idents(Bcell_scobject)))
+
+BCluster_over_time <- merge(BCluster_over_time, Bcell_cluster_annotations, by = "RNA_snn_res.0.4")
+
+# Lineplot
+ggplot(BCluster_over_time, aes(x = date, y = Freq, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of B Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## B cell subpopulations in CD45-expressing cells 
+
+```{r B cells in CD45+ cells}
+# Frequencies in PTPRC+ cells
+BCluster_PTPRC <- merge(BCluster_over_time, PTPRC_pos_TP, by = "date")
+BCluster_PTPRC_Freq <- BCluster_PTPRC %>% mutate(Freq.PTPRC = (Bcell.n/PTPRC.n)*100)
+write.csv(BCluster_PTPRC_Freq, "Bcells_in_CD45pos.csv")
+ggplot(BCluster_PTPRC_Freq, aes(x = date, y = Freq.PTPRC, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+
+```{r B cells in CD45+ line plot}
+ggplot(BCluster_PTPRC_Freq, aes(x = date, y = Freq.PTPRC, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of CD45+ Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## B cell subpopulations in immune cells
+
+```{r B cells in Immune Cells}
+# Frequencies in Immune Cell Clusters 
+BCluster_Immune <- merge(BCluster_over_time, Immune_cells_TP, by = "date")
+BCluster_Immune_Freq <- BCluster_Immune %>% mutate(Freq.Immune = (Bcell.n/Immune.n)*100)
+write.csv(BCluster_Immune_Freq, "Bcells_in_Immune.csv")
+ggplot(BCluster_Immune_Freq, aes(x = date, y = Freq.Immune, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+```{r B cells in Immune cells line plot}
+ggplot(BCluster_Immune_Freq, aes(x = date, y = Freq.Immune, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of Immune Cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## B cell subpopulations in all cells 
+
+```{r B cells in total cells}
+# Frequencies in All Cells
+BCluster_All <- merge(BCluster_over_time, All_cells_TP, by = "date")
+BCluster_All_Freq <- BCluster_All %>% mutate(Freq.All = (Bcell.n/All.n)*100)
+write.csv(BCluster_All_Freq, "Bcells_in_Total.csv")
+ggplot(BCluster_All_Freq, aes(x = date, y = Freq.All, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) + ylim(0, 100)
+```
+
+```{r B cells total cells line plot}
+ggplot(BCluster_All_Freq, aes(x = date, y = Freq.All, group = Annotation, 
+                                 color = Annotation)) + geom_line(size = 1.5) + 
+  scale_color_manual(values = farbenblind15) + labs(x = "Date" , y = "% of all sequenced cells") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
+### Parts of Innate Immune Cell Populations in Immune Cells
+
+```{r Innate Immune Cells}
+Mono_clusters <- WhichCells(All_cells_scobject, idents = c("Monocytes"))
+Mono_cells_TP <- subset(All_cells_scobject, cells = Mono_clusters)
+Mono_cells_TP <- Mono_cells_TP@meta.data %>% group_by(date) %>% summarise(Mono.count = n())
+Monos_in_Immune <- merge(Mono_cells_TP, Immune_cells_TP, by = "date")
+Monos_in_Immune_Freq <- Monos_in_Immune %>% mutate(Mono.Freq.Immune = (Mono.count/Immune.n)*100)
+Monos_in_Immune_Freq
+
+Mast_clusters <- WhichCells(All_cells_scobject, idents = c("Mast Cells"))
+Mast_cells_TP <- subset(All_cells_scobject, cells = Mast_clusters)
+Mast_cells_TP <- Mast_cells_TP@meta.data %>% group_by(date) %>% summarise(Mast.count = n())
+Masts_in_Immune <- merge(Mast_cells_TP, Immune_cells_TP, by = "date")
+Masts_in_Immune_Freq <- Masts_in_Immune %>% mutate(Mast.Freq.Immune = (Mast.count/Immune.n)*100)
+Masts_in_Immune_Freq
+
+Myeloid_clusters <- WhichCells(All_cells_scobject, idents = c("Myeloid Cells"))
+Myeloid_cells_TP <- subset(All_cells_scobject, cells = Myeloid_clusters)
+Myeloid_cells_TP <- Myeloid_cells_TP@meta.data %>% group_by(date) %>% summarise(Myeloid.count = n())
+Myeloids_in_Immune <- merge(Myeloid_cells_TP, Immune_cells_TP, by = "date")
+Myeloids_in_Immune_Freq <- Myeloids_in_Immune %>% mutate(Myeloid.Freq.Immune =
+                                                           (Myeloid.count/Immune.n)*100)
+Myeloids_in_Immune_Freq
+```
+

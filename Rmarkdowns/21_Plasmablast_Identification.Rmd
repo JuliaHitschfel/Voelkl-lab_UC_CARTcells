@@ -1,0 +1,244 @@
+---
+title: "Plasmablast_investigation"
+author: "Julia Hitschfel"
+date: "2026-02-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(clusterProfiler)
+library(DESeq2)
+library(msigdbr)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D")
+```
+
+## Plasmablasten Identification
+
+This script examines the plasma cell clusters to identify if there are more proliferating plasma cell clusters that likely then contain plasmablasts. The cluster initially named plasmablasts resembles more a GC B cell transcriptional profile and will thus be renamed. 
+To identify proliferating cells, Cell Cycle Scoring implemented in Seurat will be performed: 
+
+```{r Cell Cycle Scoring}
+Bcell_scobject <- readRDS(file = "Bcell_v5_integrated_singleR_annotations.rds")
+
+# Rename Idents to better reflect cluster identities 
+Bcell_scobject <- RenameIdents(Bcell_scobject, 'Plasmacells_1' = 'PC-1', 'Plasmacells_2' = 'PC-2', 'Plasmacells_3' = 'PC-3/PB', 
+                               'Plasmacells_4' = 'PC-4', 'Plasmacells_5' = 'PC-5', 'Plasmablasts' = 'GC B cells')
+
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+Bcell_scobject <- CellCycleScoring(Bcell_scobject, s.features = s.genes, g2m.features = g2m.genes)
+
+# view cell cycle scores and phase assignments
+head(Bcell_scobject@meta.data)
+
+Bcell_scobject@meta.data$Annotation <- Idents(Bcell_scobject)
+
+ggplot(Bcell_scobject@meta.data, aes(x = Annotation, y = S.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45))
+
+ggsave("/Figures/Cycling_S_phase_score_Bcells.tiff", 
+       plot = last_plot(), width = 2000, height = 1400, units = "px", dpi = 300)
+
+ggplot(Bcell_scobject@meta.data, aes(x = Annotation, y = G2M.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45))
+
+ggsave("/Figures/Cycling_G2M_phase_score_Bcells.tiff", 
+       plot = last_plot(), width = 2000, height = 1400, units = "px", dpi = 300)
+
+VlnPlot(Bcell_scobject, features = "ITGB7") + 
+  scale_fill_manual(values = farbenblind15)
+
+ggsave("/Figures/Bcells_ITGB7_clusters.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+```
+
+## Comparison IgA+ and IgG+ Plasmablasts/Plasmacells 
+
+Using the VDJ Library Data, B cells are split in IgA and IgG expressing cells. VDJ data is used, since in the gene expression data most IgA2 expressing cells also show increased IgA2 expression. This is likely a Multi Mapping Problem with cellranger, which can't always distinguish IGHA1 and IGHA2 transcripts due to the high homology. The VDJ Library is more reliable in this regard due to the mapping of full-length VDJ transcripts. 
+
+
+```{r Compare IgA and IgG positive PCs}
+FeatureScatter(Bcell_scobject, feature1 = "IGHA1", feature2 = "IGHA2")
+
+IgA1.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHA1_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgA1.pos, "IgA+", NA)
+
+IgA2.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHA2_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgA2.pos, "IgA+",
+                                          Bcell_scobject$IgA.IgG.isotypes)
+
+IgG4.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHG4_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgG4.pos, "IgG+", 
+                                          Bcell_scobject$IgA.IgG.isotypes)
+
+IgG3.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHG3_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgG3.pos, "IgG+", 
+                                          Bcell_scobject$IgA.IgG.isotypes)
+
+IgG2.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHG2_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgG2.pos, "IgG+", 
+                                          Bcell_scobject$IgA.IgG.isotypes)
+
+IgG1.pos <- rownames(Bcell_scobject@meta.data)[grepl("IGHG1_", Bcell_scobject$CTgene)]
+Bcell_scobject$IgA.IgG.isotypes <- ifelse(rownames(Bcell_scobject@meta.data) %in% IgG1.pos, "IgG+", 
+                                          Bcell_scobject$IgA.IgG.isotypes)
+
+Bcell_isotype_scobject <- subset(Bcell_scobject, !is.na(Bcell_scobject$IgA.IgG.isotypes))
+Bcell_isotype_scobject <- subset(Bcell_isotype_scobject, Bcell_isotype_scobject$Annotation != "Naive")
+
+```
+
+
+```{r simple DEG Analysis on single cell level}
+Idents(Bcell_isotype_scobject) <- "IgA.IgG.isotypes"
+IgA.vs.IgG <- FindMarkers(Bcell_isotype_scobject, ident.1 = "IgA+", ident.2 = "IgG+", logfc.threshold = 0.25, 
+                          test.use = "wilcox", min.pct = 0.1)
+
+write.csv(IgA.vs.IgG, "IgA_vs_IgG_Bcells_single-cell_DEGs.csv")
+
+# Violin Plot of DEGs
+IgA.vs.IgG$neg.log10.padj <- -log10(IgA.vs.IgG$p_val_adj)
+IgA.vs.IgG_volcano <- IgA.vs.IgG %>% filter(!is.na(neg.log10.padj))
+
+
+IgA.vs.IgG_volcano <- IgA.vs.IgG_volcano %>%
+  mutate(gene_type = case_when(avg_log2FC >= 1 & p_val_adj <= 0.05 ~ "up",
+                               avg_log2FC <= -1 & p_val_adj <= 0.05 ~ "down",
+                               TRUE ~ "ns"))  
+
+cols <- c("up" = "#ffad73", "down" = "#26b3ff", "ns" = "grey") 
+sizes <- c("up" = 2, "down" = 2, "ns" = 1) 
+alphas <- c("up" = 1, "down" = 1, "ns" = 0.5)
+
+significant.genes <- IgA.vs.IgG_volcano %>% filter(p_val_adj <= 0.05)
+significant.genes$geneID <- rownames(significant.genes)
+  
+IgA.vs.IgG_volcano %>%
+  ggplot(aes(x = avg_log2FC,
+             y = neg.log10.padj,
+             fill = gene_type,    
+             size = gene_type,
+             alpha = gene_type)) + 
+  geom_point(shape = 21, # Specify shape and colour as fixed local parameters    
+             colour = "black") + 
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+   geom_label_repel(data = significant.genes, # Add labels last to appear as the top layer  
+                   aes(label = geneID),
+                   force = 2,
+                   nudge_y = 0.25) +
+  scale_fill_manual(values = cols) + # Modify point colour
+  scale_size_manual(values = sizes) + # Modify point size
+  scale_alpha_manual(values = alphas) + # Modify point transparency
+  scale_x_continuous(breaks = c(seq(-8, 8, 2)),       
+                     limits = c(-8, 8)) + 
+  labs(x = "log2(Fold Change)", y = "-log10(adj. P value)", 
+       title = "Differentially expressed genes IgA vs IgG expressing B cells") + theme_bw()
+```
+
+
+```{r GSEA mit Cluster Profiler}
+IgA.vs.IgG$sign.log.10.p <-
+  sign(IgA.vs.IgG$avg_log2FC)*(-log10(IgA.vs.IgG$p_val))
+IgA.vs.IgG_sort <- IgA.vs.IgG %>% filter(!is.na(sign.log.10.p))
+IgA.vs.IgG_sort <- IgA.vs.IgG_sort[order(IgA.vs.IgG_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes <- as.vector(IgA.vs.IgG_sort$sign.log.10.p)
+names(ranked_genes) <- rownames(IgA.vs.IgG_sort)
+
+# Import the MSigDB Hallmark Collection
+hallmark<- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+head(hallmark)
+
+h2 <- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#set seed
+set.seed(123)
+#run GSEA
+Isotype.HALLMARK <- GSEA(ranked_genes, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(Isotype.HALLMARK)
+
+print(paste0(Isotype.HALLMARK@result$ID, " - NES:  ", Isotype.HALLMARK@result$NES,  " - padj:  ",
+             Isotype.HALLMARK@result$p.adjust))
+
+Isotype.Hallmark.df <- data.frame(ID = Isotype.HALLMARK@result$ID, 
+                             NES = Isotype.HALLMARK@result$NES, 
+                             padj = Isotype.HALLMARK@result$p.adjust)
+
+Isotype.Hallmark.df <- Isotype.Hallmark.df[order(Isotype.Hallmark.df$NES),]
+Isotype.Hallmark.df$ID <- factor(Isotype.Hallmark.df$ID, levels = Isotype.Hallmark.df$ID)
+
+ggplot(Isotype.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+
+```
+
+
+```{r GSEA mit GO und REACTOME}
+GO_BP <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+GO_BP_t2n <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Isotype.GO.BP <- GSEA(ranked_genes, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Isotype.GO.BP.df <- data.frame(ID = Isotype.GO.BP@result$ID, 
+                             NES = Isotype.GO.BP@result$NES, 
+                             padj = Isotype.GO.BP@result$p.adjust)
+
+Isotype.GO.BP.df.top10.up <- Isotype.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+Isotype.GO.BP.df.top10.dn <- Isotype.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Isotype.GO.BP.df.top20 <- rbind(Isotype.GO.BP.df.top10.up, Isotype.GO.BP.df.top10.dn)
+
+ggplot(Isotype.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in IgA vs IgG expressing B cells") + theme_minimal() + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+  
+
+## GSEA mit REACTOME
+REACTOME <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+REACTOME_t2n <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Isotype.REACTOME <- GSEA(ranked_genes, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Isotype.REACTOME.df <- data.frame(ID = Isotype.REACTOME@result$ID, 
+                             NES = Isotype.REACTOME@result$NES, 
+                             padj = Isotype.REACTOME@result$p.adjust)
+
+Isotype.REACTOME.df.top10.up <- Isotype.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Isotype.REACTOME.df.top10.dn <- Isotype.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Isotype.REACTOME.df.top20 <- rbind(Isotype.REACTOME.df.top10.up, Isotype.REACTOME.df.top10.dn)
+
+
+Isotype.REACTOME.df.top20 <- Isotype.REACTOME.df.top20[order(Isotype.REACTOME.df.top20$NES),]
+Isotype.REACTOME.df.top20$ID <- factor(Isotype.REACTOME.df.top20$ID, levels = Isotype.REACTOME.df.top20$ID)
+
+ggplot(Isotype.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in IgA vs IgG expressing B cells") + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+```
