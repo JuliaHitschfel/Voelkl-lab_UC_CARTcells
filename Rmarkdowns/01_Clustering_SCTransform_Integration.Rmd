@@ -23,11 +23,9 @@ library(RColorBrewer)
 
 ```{r Load Data}
 All.data <- list.dirs("/data/", recursive = F)
-tp.ex <- c("/data/2024_10_15","/data/2025_04_23")
-All.data.tp.ex <- setdiff(All.data, tp.ex)
 
 list.10x <- list()
-for(i in All.data.tp.ex){
+for(i in All.data){
   rnaseq.data <- Read10X_h5(paste0(i, "/count/sample_filtered_feature_bc_matrix.h5"))
   pbmc <- CreateSeuratObject(counts = rnaseq.data, project = "pbmc3k", min.cells = 3, 
                              min.features = 200)
