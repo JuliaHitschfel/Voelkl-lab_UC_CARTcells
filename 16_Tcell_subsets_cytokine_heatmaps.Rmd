@@ -1,0 +1,178 @@
+---
+title: "17_Tcell_subsets_cytokines_heatmap"
+author: "Julia Hitschfel"
+date: "2026-06-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(viridis)
+library(circlize)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+
+date.colors <- brewer.pal(8, "Set2")
+```
+
+## Cytokine expression in T cell subpopulations
+
+This script aims to visualize the expression of cytokines and chemokines in T cell subsets over the course of treatment. A Heatmap with normalized and scaled expression values on a pseudobulk level will be tested: 
+ 
+
+```{r T cell cytokines}
+# Tcells
+Tcells <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcells.pseudo <- AggregateExpression(Tcells, assays = "RNA", return.seurat = F, group.by = c("ident", "tp"))
+
+head(Tcells.pseudo$RNA)
+
+#Expression is normalized and log transformed to later plot the scaled cytokine expression values in a heatmap 
+#counts -> TP10K
+tp10k <- t(t(as.matrix(Tcells.pseudo$RNA)) / colSums(as.matrix(Tcells.pseudo$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+# Starting with cytokines expressed by Tregs
+Treg.cyto <- log_tp10k[c("IL10", "IL17A", "IL26", "CXCL8"), grepl("^Treg", colnames(log_tp10k))]
+
+colnames(Treg.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Treg.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Tregs (1)", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Treg.cyto.zscore <- t(scale(t(Treg.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Treg.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Tregs (1)", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+### IKZF2+ Tregs
+
+```{r IKZF2 Treg}
+# Expression of Treg associated cytokines in the second Treg cluster
+# IL17A will be taken out here, as expression is the same at all timepoints 
+Treg2.cyto <- log_tp10k[c("IL10", "IL26", "CXCL8", "IL1A"), grepl("IKZF2+", colnames(log_tp10k))]
+
+colnames(Treg2.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Cytokines.Treg2 <- Heatmap(Treg2.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in IKZF2+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.Treg2
+
+### z-score
+Treg2.cyto.zscore <- t(scale(t(Treg2.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.Treg2.zscore <- Heatmap(Treg2.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in IKZF2+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.Treg2.zscore
+```
+
+### TPH Cytokines
+
+```{r TPH cytokines}
+# Examine TPH associated cytokine expression over the course of treatment
+TPH.cyto <- log_tp10k[c("CXCL13", "IL21", "IL17A", "IL5", "IL7"), grepl("TPH", colnames(log_tp10k))]
+
+colnames(TPH.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols.TPH <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5), viridis(n = 10))
+
+Cytokines.TPH <- Heatmap(TPH.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols.TPH, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in TPH-like", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.TPH
+
+### z-score
+TPH.cyto.zscore <- t(scale(t(TPH.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.75,-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 16))
+Cytokines.TPH.zscore <- Heatmap(TPH.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in TPH", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.TPH.zscore
+```
+
+### Th17 Cytokines 
+
+```{r Th17 cells}
+# Examine expression of Th17 associated cytokines in Th17 cells during treatment 
+Th17.cyto <- log_tp10k[c("IL17A", "IL26", "IL1B", "IL22", "IL15"), grepl("Th17", colnames(log_tp10k))]
+
+colnames(Th17.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols.Th17 <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3), viridis(n = 11))
+
+Cytokines.Th17 <- Heatmap(Th17.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols.Th17, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Th17-like", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.Th17
+
+### z-score
+Th17.cyto.zscore <- t(scale(t(Th17.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.75,-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 16))
+Cytokines.Th17.zscore <- Heatmap(Th17.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Th17", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.Th17.zscore
+```
+
+
+### GzmK+ T cells
+
+```{r GzmK cytokines}
+
+GzmK.cyto <- log_tp10k[c("IL10", "IL19", "GZMK"), grepl("GzmK", colnames(log_tp10k))]
+
+colnames(GzmK.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols.GzmK <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3,3.5,4,4.5), viridis(n = 14))
+
+Cytokines.GzmK <- Heatmap(GzmK.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols.GzmK, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in GzmK+ CD8+", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.GzmK
+
+
+### z-score
+GzmK.cyto.zscore <- t(scale(t(GzmK.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-2,-1.75,-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5), viridis(n = 18))
+Cytokines.GzmK.zscore <- Heatmap(GzmK.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in GzmK+ CD8+", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.GzmK.zscore
+```

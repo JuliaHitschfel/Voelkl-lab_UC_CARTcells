@@ -1,0 +1,708 @@
+---
+title: "20_GSEA_Tcell_subsets"
+author: "Julia Hitschfel"
+date: "2026-07-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(dplyr)
+library(DESeq2)
+library(ggplot2) 
+library(clusterProfiler)
+library(tidyverse)
+library(msigdbr)
+library(ggforce)
+library(ggrepel)
+library(tidytext)
+library(plotly)
+```
+
+
+## DESeq2 for T cell subsets
+
+```{r Prepare data and check TRM}
+
+Tcells <- readRDS("Tcell_subclustering_CCA_Integration_annotated.rds")
+
+Tcells <- RenameIdents(Tcells, 'Activated T cells?' = 'Activated T cells', 'TCM' = 'Naive/TCM', 'Treg' = 'CCR6+ Treg', 
+                       'IKZF2+ Treg' = 'Effector Treg', 'TPH?' = 'Tph-like', 'Th17' = 'Th17-like CD4', 
+                       'Proliferating T' = 'Proliferating cells', 'Undefined' = 'Memory CD8') 
+                                 
+Idents(Tcells) <- factor(Idents(Tcells), 
+                            levels = c("CD8+ TRM", "CD8+ GzmK+", "Naive/TCM", "Tph-like", "Th17-like CD4", "CCR6+ Treg", 
+                                       "Effector Treg", "Activated T cells", "NK/NKT cells", "Memory CD8",
+                                       "Proliferating cells"))
+
+Tcells$Annotation <- Idents(Tcells)
+
+Tcells.pseudo <- AggregateExpression(Tcells, assays = "RNA", 
+                                        group.by = c("tp", "Annotation"), slot = "counts",
+                                        return.seurat = F)
+
+# Manipulate the matrix to fit DESeq2 input
+matrix.t <- t(Tcells.pseudo$RNA)
+# The manipulations are not necessary, since we only aggregate on timepoint and don't need to split the data frame based on cell type
+count.data.frame <- as.data.frame(matrix.t)
+splitRows <- gsub('.*_', '', rownames(count.data.frame))
+cell.type.list <- split.data.frame(count.data.frame, f = factor(splitRows))
+
+#Retranspose the matrix and fix column names for all elements of the list
+cell.type.list.t <- lapply(cell.type.list, function(x){
+	rownames(x) <- gsub('(.*)_.*', '\\1', rownames(x))
+	t(x)
+})
+
+# Examine number of cells 
+TRM.numbers <- Tcells@meta.data %>% filter(Annotation == "CD8+ TRM") %>% group_by(tp) %>% summarise(Tcell.count = n())
+
+# Visualize cell counts
+ggplot(TRM.numbers, aes(x=tp, y=Tcell.count)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of CD8+ TRM cells") +
+    geom_text(aes(label=Tcell.count), vjust=-0.5)
+
+# Create meta.data for count matrix of CD8+ TRM
+col.data <- data.frame(samples = colnames(cell.type.list.t$`CD8+ TRM`))
+
+col.data$treatment <- ifelse(col.data$samples == "T1" | col.data$samples == "T2" |
+                               col.data$samples == "T3", "pre_CART", "post_CART")
+
+# Perform DESeq2 for CD8+ TRM pseudobulk
+count.data.TRM <- cell.type.list.t$`CD8+ TRM`
+class(count.data.TRM) <- "integer"
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.TRM)) == T), 
+                    which(grepl("^IGL", rownames(count.data.TRM)) == T), 
+                    which(grepl("^IGK", rownames(count.data.TRM)) == T))
+count.data.TRM.noIG <- count.data.TRM[-IG.transcripts,]
+class(count.data.TRM.noIG) <- "integer"
+
+
+dds.TRM <- DESeqDataSetFromMatrix(countData = count.data.TRM.noIG, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.TRM)) >= 10
+dds.TRM <- dds.TRM[keep,]
+
+dds.TRM <- DESeq(dds.TRM)
+
+resultsNames(dds.TRM)
+
+#Generate results object
+res.TRM <- results(dds.TRM, name = "treatment_pre_CART_vs_post_CART")
+res.TRM 
+
+res.TRM_df <- as.data.frame(res.TRM)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.TRM_df_sort <- res.TRM_df[order(res.TRM_df$padj),]
+head(res.TRM_df_sort, 20)
+
+write.csv(res.TRM_df_sort, "DESeq2/DEGs_CD8TRM.csv")
+```
+
+```{r Volcano Plot for CD8 TRM}
+Tcell.volcano.data <- res.TRM_df
+Tcell.volcano.data$log10.padj <- -log10(Tcell.volcano.data$padj)
+Tcell.volcano.data$diffexpressed <- ifelse(Tcell.volcano.data$log10.padj > -log10(0.05) & 
+                                        abs(Tcell.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+Tcell.volcano.data$gene <- rownames(Tcell.volcano.data)
+
+# Volcano plot
+Tcell_volcano_plot <- ggplot(Tcell.volcano.data, aes(x = log2FoldChange, y = log10.padj, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(adj. P-value)") + 
+  theme_minimal()
+
+  # geom_label(data = subset(EC.volcano.data, abs(avg_log2FC) > 4 & diffexpressed != "NS"), 
+  #           aes(x = avg_log2FC + 1.5, y = log10.pval + 2, label = gene), 
+  #           position = "nudge")
+  
+ggplotly(Tcell_volcano_plot, tooltip = "text")
+```
+
+## CCR6+ Tregs
+
+```{r CCR6 Tregs DESeq2}
+# Examine number of cells 
+CCR6Treg.numbers <- Tcells@meta.data %>% filter(Annotation == "CCR6+ Treg") %>% group_by(tp) %>% summarise(Tcell.count = n())
+
+# Visualize cell counts
+ggplot(CCR6Treg.numbers, aes(x=tp, y=Tcell.count)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of CCR6+ Treg cells") +
+    geom_text(aes(label=Tcell.count), vjust=-0.5)
+
+# Create meta.data for count matrix of CCR6+ Treg
+col.data <- data.frame(samples = colnames(cell.type.list.t$`CCR6+ Treg`))
+
+col.data$treatment <- ifelse(col.data$samples == "T1" | col.data$samples == "T2" |
+                               col.data$samples == "T3", "pre_CART", "post_CART")
+
+# Perform DESeq2 for CCR6+ Treg pseudobulk
+count.data.CCR6Treg <- cell.type.list.t$`CCR6+ Treg`
+class(count.data.CCR6Treg) <- "integer"
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.CCR6Treg)) == T), 
+                    which(grepl("^IGL", rownames(count.data.CCR6Treg)) == T), 
+                    which(grepl("^IGK", rownames(count.data.CCR6Treg)) == T))
+count.data.CCR6Treg.noIG <- count.data.CCR6Treg[-IG.transcripts,]
+class(count.data.CCR6Treg.noIG) <- "integer"
+
+
+dds.CCR6Treg <- DESeqDataSetFromMatrix(countData = count.data.CCR6Treg.noIG, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.CCR6Treg)) >= 10
+dds.CCR6Treg <- dds.CCR6Treg[keep,]
+
+dds.CCR6Treg <- DESeq(dds.CCR6Treg)
+
+resultsNames(dds.CCR6Treg)
+
+#Generate results object
+res.CCR6Treg <- results(dds.CCR6Treg, name = "treatment_pre_CART_vs_post_CART")
+res.CCR6Treg 
+
+res.CCR6Treg_df <- as.data.frame(res.CCR6Treg)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.CCR6Treg_df_sort <- res.CCR6Treg_df[order(res.CCR6Treg_df$padj),]
+head(res.CCR6Treg_df_sort, 20)
+
+write.csv(res.CCR6Treg_df_sort, "DESeq2/DEGs_CCR6-Tregs.csv")
+```
+
+```{r CCR6 Tregs Volcano}
+Tcell.volcano.data <- res.CCR6Treg_df
+Tcell.volcano.data$log10.pvalue <- -log10(Tcell.volcano.data$pvalue)
+Tcell.volcano.data$diffexpressed <- ifelse(Tcell.volcano.data$log10.pvalue > -log10(0.05) & 
+                                        abs(Tcell.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+Tcell.volcano.data$gene <- rownames(Tcell.volcano.data)
+
+# Volcano plot
+Tcell_volcano_plot <- ggplot(Tcell.volcano.data, aes(x = log2FoldChange, y = log10.pvalue, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(P-value)") + 
+  theme_minimal()
+
+  # geom_label(data = subset(EC.volcano.data, abs(avg_log2FC) > 4 & diffexpressed != "NS"), 
+  #           aes(x = avg_log2FC + 1.5, y = log10.pval + 2, label = gene), 
+  #           position = "nudge")
+  
+ggplotly(Tcell_volcano_plot, tooltip = "text")
+```
+
+## Effector Tregs DESeq2
+
+```{r Effector Tregs}
+# Examine number of cells
+Effector.Treg.numbers <- Tcells@meta.data %>% filter(Annotation == "Effector Treg") %>% group_by(tp) %>% summarise(Tcell.count = n())
+
+# Visualize cell counts
+ggplot(Effector.Treg.numbers, aes(x=tp, y=Tcell.count)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of Effector Treg cells") +
+    geom_text(aes(label=Tcell.count), vjust=-0.5)
+
+# Create meta.data for count matrix of Effector Treg
+col.data <- data.frame(samples = colnames(cell.type.list.t$`Effector Treg`))
+
+col.data$treatment <- ifelse(col.data$samples == "T1" | col.data$samples == "T2" |
+                               col.data$samples == "T3", "pre_CART", "post_CART")
+
+# Perform DESeq2 for Effector Treg pseudobulk
+count.data.EffectorTreg <- cell.type.list.t$`Effector Treg`
+class(count.data.EffectorTreg) <- "integer"
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.EffectorTreg)) == T), 
+                    which(grepl("^IGL", rownames(count.data.EffectorTreg)) == T), 
+                    which(grepl("^IGK", rownames(count.data.EffectorTreg)) == T))
+count.data.EffectorTreg.noIG <- count.data.EffectorTreg[-IG.transcripts,]
+class(count.data.EffectorTreg.noIG) <- "integer"
+
+
+dds.EffectorTreg <- DESeqDataSetFromMatrix(countData = count.data.EffectorTreg.noIG, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.EffectorTreg)) >= 10
+dds.EffectorTreg <- dds.EffectorTreg[keep,]
+
+dds.EffectorTreg <- DESeq(dds.EffectorTreg)
+
+resultsNames(dds.EffectorTreg)
+
+#Generate results object
+res.EffectorTreg <- results(dds.EffectorTreg, name = "treatment_pre_CART_vs_post_CART")
+res.EffectorTreg 
+
+res.EffectorTreg_df <- as.data.frame(res.EffectorTreg)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.EffectorTreg_df_sort <- res.EffectorTreg_df[order(res.EffectorTreg_df$padj),]
+head(res.EffectorTreg_df_sort, 20)
+
+write.csv(res.EffectorTreg_df_sort, "DESeq2/DEGs_Effector-Tregs.csv")
+```
+
+```{r Effector Tregs Volcano}
+Tcell.volcano.data <- res.EffectorTreg_df
+Tcell.volcano.data$log10.pvalue <- -log10(Tcell.volcano.data$pvalue)
+Tcell.volcano.data$diffexpressed <- ifelse(Tcell.volcano.data$log10.pvalue > -log10(0.05) & 
+                                        abs(Tcell.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+Tcell.volcano.data$gene <- rownames(Tcell.volcano.data)
+
+# Volcano plot
+Tcell_volcano_plot <- ggplot(Tcell.volcano.data, aes(x = log2FoldChange, y = log10.pvalue, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(P-value)") + 
+  theme_minimal()
+
+  # geom_label(data = subset(EC.volcano.data, abs(avg_log2FC) > 4 & diffexpressed != "NS"), 
+  #           aes(x = avg_log2FC + 1.5, y = log10.pval + 2, label = gene), 
+  #           position = "nudge")
+  
+ggplotly(Tcell_volcano_plot, tooltip = "text")
+```
+
+
+# GSEA 
+
+## GSEA for CD8+ TRM 
+
+```{r GSEA CD8 TRM Hallmark}
+res.TRM_df_sort$sign.log.10.p <-
+  sign(res.TRM_df_sort$log2FoldChange)*(-log10(res.TRM_df_sort$pvalue))
+res.TRM_df_sort <- res.TRM_df_sort %>% filter(!is.na(sign.log.10.p))
+res.TRM_df_sort <- res.TRM_df_sort[order(res.TRM_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_TRM <- as.vector(res.TRM_df_sort$sign.log.10.p)
+names(ranked_genes_TRM) <- rownames(res.TRM_df_sort)
+
+# Import the MSigDB Hallmark Collection
+hallmark<- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+head(hallmark)
+
+h2 <- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#set seed
+set.seed(123)
+#run GSEA
+TRM.HALLMARK <- GSEA(ranked_genes_TRM, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(TRM.HALLMARK)
+
+print(paste0(TRM.HALLMARK@result$ID, " - NES:  ", TRM.HALLMARK@result$NES,  " - padj:  ",
+             TRM.HALLMARK@result$p.adjust))
+
+TRM.Hallmark.df <- data.frame(ID = TRM.HALLMARK@result$ID, 
+                             NES = TRM.HALLMARK@result$NES, 
+                             padj = TRM.HALLMARK@result$p.adjust)
+
+TRM.Hallmark.df <- TRM.Hallmark.df[order(TRM.Hallmark.df$NES),]
+TRM.Hallmark.df$ID <- factor(TRM.Hallmark.df$ID, levels = TRM.Hallmark.df$ID)
+
+ggplot(TRM.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+```
+
+```{r GSEA TRM with GOBP and REACTOME}
+GO_BP <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+GO_BP_t2n <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+TRM.GO.BP <- GSEA(ranked_genes_TRM, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+TRM.GO.BP.df <- data.frame(ID = TRM.GO.BP@result$ID, 
+                             NES = TRM.GO.BP@result$NES, 
+                             padj = TRM.GO.BP@result$p.adjust)
+
+TRM.GO.BP.df.top10.up <- TRM.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+TRM.GO.BP.df.top10.dn <- TRM.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+TRM.GO.BP.df.top20 <- rbind(TRM.GO.BP.df.top10.up, TRM.GO.BP.df.top10.dn)
+
+TRM.GO.BP.df.top20 <- TRM.GO.BP.df.top20[order(TRM.GO.BP.df.top20$NES),]
+TRM.GO.BP.df.top20$ID <- factor(TRM.GO.BP.df.top20$ID, levels = TRM.GO.BP.df.top20$ID)
+
+ggplot(TRM.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in CD8+ TRM cells")
+
+
+## GSEA mit REACTOME
+REACTOME <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+REACTOME_t2n <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+TRM.REACTOME <- GSEA(ranked_genes_TRM, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+TRM.REACTOME.df <- data.frame(ID = TRM.REACTOME@result$ID, 
+                             NES = TRM.REACTOME@result$NES, 
+                             padj = TRM.REACTOME@result$p.adjust)
+
+TRM.REACTOME.df.top10.up <- TRM.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+TRM.REACTOME.df.top10.dn <- TRM.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+TRM.REACTOME.df.top20 <- rbind(TRM.REACTOME.df.top10.up, TRM.REACTOME.df.top10.dn)
+
+TRM.REACTOME.df.top20 <- TRM.REACTOME.df.top20[order(TRM.REACTOME.df.top20$NES),]
+TRM.REACTOME.df.top20$ID <- factor(TRM.REACTOME.df.top20$ID, levels = TRM.REACTOME.df.top20$ID)
+
+ggplot(TRM.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in CD8+ TRM cells")
+```
+
+```{r Bind results TRM GSEA, fig.width=10, fig.height=9}
+all.GSEA.TRM <- rbind(TRM.Hallmark.df, TRM.GO.BP.df.top20, TRM.REACTOME.df.top20)
+all.GSEA.TRM$DB <- ifelse(grepl("HALLMARK", all.GSEA.TRM$ID), "HALLMARK", NA)
+all.GSEA.TRM$DB <- ifelse(grepl("GOBP", all.GSEA.TRM$ID), "GOBP", all.GSEA.TRM$DB)
+all.GSEA.TRM$DB <- ifelse(grepl("REACTOME", all.GSEA.TRM$ID), "REACTOME", all.GSEA.TRM$DB)
+all.GSEA.TRM$DB <- factor(all.GSEA.TRM$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.TRM$Status <- ifelse(all.GSEA.TRM$NES < 0, "post CART", NA)
+all.GSEA.TRM$Status <- ifelse(all.GSEA.TRM$NES > 0, "pre CART", all.GSEA.TRM$Status)
+
+all.GSEA.TRM.preCAR <- all.GSEA.TRM %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.TRM.postCAR <- all.GSEA.TRM %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.TRM.top5 <- rbind(all.GSEA.TRM.preCAR, all.GSEA.TRM.postCAR)
+all.GSEA.TRM.top5$Status <- factor(all.GSEA.TRM.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.TRM.top5$ID <- gsub("GOBP", "", all.GSEA.TRM.top5$ID)
+all.GSEA.TRM.top5$ID <- gsub("REACTOME", "", all.GSEA.TRM.top5$ID)
+all.GSEA.TRM.top5$ID <- gsub("HALLMARK", "", all.GSEA.TRM.top5$ID)
+all.GSEA.TRM.top5$ID <- gsub("_", " ", all.GSEA.TRM.top5$ID)
+
+all.GSEA.TRM.top5 <- all.GSEA.TRM.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.TRM.top5.gg <- ggplot2::ggplot(all.GSEA.TRM.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.TRM.top5.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_CD8TRM.tiff", 
+       plot = All.GSEA.TRM.top5.gg, device = "tiff", dpi = 300, width = 10, height = 9, units = "in", compression = "lzw")
+
+
+ggplot2::ggsave("Figures/Publication_ready/GSEA_summary_CD8TRM.pdf", 
+       plot = All.GSEA.TRM.top5.gg, device = "pdf", dpi = 300, width = 10, height = 9, units = "in")
+
+## No REACTOME
+all.GSEA.TRM.noREACT <- rbind(TRM.Hallmark.df, TRM.GO.BP.df.top20)
+all.GSEA.TRM.noREACT$DB <- ifelse(grepl("HALLMARK", all.GSEA.TRM.noREACT$ID), "HALLMARK", NA)
+all.GSEA.TRM.noREACT$DB <- ifelse(grepl("GOBP", all.GSEA.TRM.noREACT$ID), "GOBP", all.GSEA.TRM.noREACT$DB)
+all.GSEA.TRM.noREACT$DB <- factor(all.GSEA.TRM.noREACT$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.TRM.noREACT$Status <- ifelse(all.GSEA.TRM.noREACT$NES < 0, "post CART", NA)
+all.GSEA.TRM.noREACT$Status <- ifelse(all.GSEA.TRM.noREACT$NES > 0, "pre CART", all.GSEA.TRM.noREACT$Status)
+
+all.GSEA.TRM.noREACT.preCAR <- all.GSEA.TRM.noREACT %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.TRM.noREACT.postCAR <- all.GSEA.TRM.noREACT %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.TRM.noREACT.top5 <- rbind(all.GSEA.TRM.noREACT.preCAR, all.GSEA.TRM.noREACT.postCAR)
+all.GSEA.TRM.noREACT.top5$Status <- factor(all.GSEA.TRM.noREACT.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.TRM.noREACT.top5$ID <- gsub("GOBP", "", all.GSEA.TRM.noREACT.top5$ID)
+all.GSEA.TRM.noREACT.top5$ID <- gsub("HALLMARK", "", all.GSEA.TRM.noREACT.top5$ID)
+all.GSEA.TRM.noREACT.top5$ID <- gsub("_", " ", all.GSEA.TRM.noREACT.top5$ID)
+
+all.GSEA.TRM.noREACT.top5 <- all.GSEA.TRM.noREACT.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.TRM.noREACT.top5.gg <- ggplot2::ggplot(all.GSEA.TRM.noREACT.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(2,5)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 9) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 7),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1)
+  )
+
+All.GSEA.TRM.noREACT.top5.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_CD8TRM_noREACTOME.tiff", 
+       plot = All.GSEA.TRM.noREACT.top5.gg, device = "tiff", dpi = 300, width = 3.5, height = 3.5, units = "in", compression = "lzw")
+
+
+ggplot2::ggsave("Figures/Publication_ready/GSEA_summary_CD8TRM_noREACTOME.pdf", 
+       plot = All.GSEA.TRM.noREACT.top5.gg, device = "pdf", dpi = 300, width = 3.5, height = 3.5, units = "in")
+```
+
+## GSEA for CCR6+ Treg
+
+```{r GSEA for CCR6 Tregs}
+res.CCR6Treg_df_sort$sign.log.10.p <-
+  sign(res.CCR6Treg_df_sort$log2FoldChange)*(-log10(res.CCR6Treg_df_sort$pvalue))
+res.CCR6Treg_df_sort <- res.CCR6Treg_df_sort %>% filter(!is.na(sign.log.10.p))
+res.CCR6Treg_df_sort <- res.CCR6Treg_df_sort[order(res.CCR6Treg_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_CCR6Treg <- as.vector(res.CCR6Treg_df_sort$sign.log.10.p)
+names(ranked_genes_CCR6Treg) <- rownames(res.CCR6Treg_df_sort)
+
+#run GSEA
+CCR6Treg.HALLMARK <- GSEA(ranked_genes_CCR6Treg, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(CCR6Treg.HALLMARK)
+
+print(paste0(CCR6Treg.HALLMARK@result$ID, " - NES:  ", CCR6Treg.HALLMARK@result$NES,  " - padj:  ",
+             CCR6Treg.HALLMARK@result$p.adjust))
+
+CCR6Treg.Hallmark.df <- data.frame(ID = CCR6Treg.HALLMARK@result$ID, 
+                             NES = CCR6Treg.HALLMARK@result$NES, 
+                             padj = CCR6Treg.HALLMARK@result$p.adjust)
+
+CCR6Treg.Hallmark.df <- CCR6Treg.Hallmark.df[order(CCR6Treg.Hallmark.df$NES),]
+CCR6Treg.Hallmark.df$ID <- factor(CCR6Treg.Hallmark.df$ID, levels = CCR6Treg.Hallmark.df$ID)
+
+ggplot(CCR6Treg.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+```
+
+```{r CCR6 Treg GSEA with GOBP and REACTOME}
+#run GSEA with GO:BP
+CCR6Treg.GO.BP <- GSEA(ranked_genes_CCR6Treg, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+CCR6Treg.GO.BP.df <- data.frame(ID = CCR6Treg.GO.BP@result$ID, 
+                             NES = CCR6Treg.GO.BP@result$NES, 
+                             padj = CCR6Treg.GO.BP@result$p.adjust)
+
+CCR6Treg.GO.BP.df.top10.up <- CCR6Treg.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+CCR6Treg.GO.BP.df.top10.dn <- CCR6Treg.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+CCR6Treg.GO.BP.df.top20 <- rbind(CCR6Treg.GO.BP.df.top10.up, CCR6Treg.GO.BP.df.top10.dn)
+
+CCR6Treg.GO.BP.df.top20 <- CCR6Treg.GO.BP.df.top20[order(CCR6Treg.GO.BP.df.top20$NES),]
+CCR6Treg.GO.BP.df.top20$ID <- factor(CCR6Treg.GO.BP.df.top20$ID, levels = CCR6Treg.GO.BP.df.top20$ID)
+
+ggplot(CCR6Treg.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in CCR6+ Tregs")
+
+
+#run GSEA with REACTOME
+CCR6Treg.REACTOME <- GSEA(ranked_genes_CCR6Treg, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+CCR6Treg.REACTOME.df <- data.frame(ID = CCR6Treg.REACTOME@result$ID, 
+                             NES = CCR6Treg.REACTOME@result$NES, 
+                             padj = CCR6Treg.REACTOME@result$p.adjust)
+
+CCR6Treg.REACTOME.df.top10.up <- CCR6Treg.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+CCR6Treg.REACTOME.df.top10.dn <- CCR6Treg.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+CCR6Treg.REACTOME.df.top20 <- rbind(CCR6Treg.REACTOME.df.top10.up, CCR6Treg.REACTOME.df.top10.dn)
+
+CCR6Treg.REACTOME.df.top20 <- CCR6Treg.REACTOME.df.top20[order(CCR6Treg.REACTOME.df.top20$NES),]
+CCR6Treg.REACTOME.df.top20$ID <- factor(CCR6Treg.REACTOME.df.top20$ID, levels = CCR6Treg.REACTOME.df.top20$ID)
+
+ggplot(CCR6Treg.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in CCR6+ Tregs")
+```
+
+```{r Bind results of CCR6 Treg GSEA, fig.width=8, fig.height=8}
+all.GSEA.CCR6Treg <- rbind(CCR6Treg.Hallmark.df, CCR6Treg.GO.BP.df.top20, CCR6Treg.REACTOME.df.top20)
+all.GSEA.CCR6Treg$DB <- ifelse(grepl("HALLMARK", all.GSEA.CCR6Treg$ID), "HALLMARK", NA)
+all.GSEA.CCR6Treg$DB <- ifelse(grepl("GOBP", all.GSEA.CCR6Treg$ID), "GOBP", all.GSEA.CCR6Treg$DB)
+all.GSEA.CCR6Treg$DB <- ifelse(grepl("REACTOME", all.GSEA.CCR6Treg$ID), "REACTOME", all.GSEA.CCR6Treg$DB)
+all.GSEA.CCR6Treg$DB <- factor(all.GSEA.CCR6Treg$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.CCR6Treg$Status <- ifelse(all.GSEA.CCR6Treg$NES < 0, "post CART", NA)
+all.GSEA.CCR6Treg$Status <- ifelse(all.GSEA.CCR6Treg$NES > 0, "pre CART", all.GSEA.CCR6Treg$Status)
+
+all.GSEA.CCR6Treg.preCAR <- all.GSEA.CCR6Treg %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.CCR6Treg.postCAR <- all.GSEA.CCR6Treg %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.CCR6Treg.top5 <- rbind(all.GSEA.CCR6Treg.preCAR, all.GSEA.CCR6Treg.postCAR)
+all.GSEA.CCR6Treg.top5$Status <- factor(all.GSEA.CCR6Treg.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.CCR6Treg.top5$ID <- gsub("GOBP", "", all.GSEA.CCR6Treg.top5$ID)
+all.GSEA.CCR6Treg.top5$ID <- gsub("REACTOME", "", all.GSEA.CCR6Treg.top5$ID)
+all.GSEA.CCR6Treg.top5$ID <- gsub("HALLMARK", "", all.GSEA.CCR6Treg.top5$ID)
+all.GSEA.CCR6Treg.top5$ID <- gsub("_", " ", all.GSEA.CCR6Treg.top5$ID)
+
+all.GSEA.CCR6Treg.top5 <- all.GSEA.CCR6Treg.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.CCR6Treg.top5.gg <- ggplot2::ggplot(all.GSEA.CCR6Treg.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.CCR6Treg.top5.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_CCR6Treg.tiff", 
+       plot = All.GSEA.CCR6Treg.top5.gg, device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+```
+
+
+## GSEA for Effector Treg
+
+```{r GSEA for effector Treg HALLMARK}
+res.EffectorTreg_df_sort$sign.log.10.p <-
+  sign(res.EffectorTreg_df_sort$log2FoldChange)*(-log10(res.EffectorTreg_df_sort$pvalue))
+res.EffectorTreg_df_sort <- res.EffectorTreg_df_sort %>% filter(!is.na(sign.log.10.p))
+res.EffectorTreg_df_sort <- res.EffectorTreg_df_sort[order(res.EffectorTreg_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_EffectorTreg <- as.vector(res.EffectorTreg_df_sort$sign.log.10.p)
+names(ranked_genes_EffectorTreg) <- rownames(res.EffectorTreg_df_sort)
+
+#run GSEA
+EffectorTreg.HALLMARK <- GSEA(ranked_genes_EffectorTreg, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(EffectorTreg.HALLMARK)
+
+print(paste0(EffectorTreg.HALLMARK@result$ID, " - NES:  ", EffectorTreg.HALLMARK@result$NES,  " - padj:  ",
+             EffectorTreg.HALLMARK@result$p.adjust))
+
+EffectorTreg.Hallmark.df <- data.frame(ID = EffectorTreg.HALLMARK@result$ID, 
+                             NES = EffectorTreg.HALLMARK@result$NES, 
+                             padj = EffectorTreg.HALLMARK@result$p.adjust)
+
+EffectorTreg.Hallmark.df <- EffectorTreg.Hallmark.df[order(EffectorTreg.Hallmark.df$NES),]
+EffectorTreg.Hallmark.df$ID <- factor(EffectorTreg.Hallmark.df$ID, levels = EffectorTreg.Hallmark.df$ID)
+
+ggplot(EffectorTreg.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+```
+
+```{r GSEA for Effector Tregs with GOBP and REACTOME}
+#run GSEA with GO:BP
+EffectorTreg.GO.BP <- GSEA(ranked_genes_EffectorTreg, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+EffectorTreg.GO.BP.df <- data.frame(ID = EffectorTreg.GO.BP@result$ID, 
+                             NES = EffectorTreg.GO.BP@result$NES, 
+                             padj = EffectorTreg.GO.BP@result$p.adjust)
+
+EffectorTreg.GO.BP.df.top10.up <- EffectorTreg.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EffectorTreg.GO.BP.df.top10.dn <- EffectorTreg.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EffectorTreg.GO.BP.df.top20 <- rbind(EffectorTreg.GO.BP.df.top10.up, EffectorTreg.GO.BP.df.top10.dn)
+
+EffectorTreg.GO.BP.df.top20 <- EffectorTreg.GO.BP.df.top20[order(EffectorTreg.GO.BP.df.top20$NES),]
+EffectorTreg.GO.BP.df.top20$ID <- factor(EffectorTreg.GO.BP.df.top20$ID, levels = EffectorTreg.GO.BP.df.top20$ID)
+
+ggplot(EffectorTreg.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in Effector Tregs")
+
+
+#run GSEA with REACTOME
+EffectorTreg.REACTOME <- GSEA(ranked_genes_EffectorTreg, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+EffectorTreg.REACTOME.df <- data.frame(ID = EffectorTreg.REACTOME@result$ID, 
+                             NES = EffectorTreg.REACTOME@result$NES, 
+                             padj = EffectorTreg.REACTOME@result$p.adjust)
+
+EffectorTreg.REACTOME.df.top10.up <- EffectorTreg.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+EffectorTreg.REACTOME.df.top10.dn <- EffectorTreg.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EffectorTreg.REACTOME.df.top20 <- rbind(EffectorTreg.REACTOME.df.top10.up, EffectorTreg.REACTOME.df.top10.dn)
+
+EffectorTreg.REACTOME.df.top20 <- EffectorTreg.REACTOME.df.top20[order(EffectorTreg.REACTOME.df.top20$NES),]
+EffectorTreg.REACTOME.df.top20$ID <- factor(EffectorTreg.REACTOME.df.top20$ID, levels = EffectorTreg.REACTOME.df.top20$ID)
+
+ggplot(EffectorTreg.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in Effector Tregs")
+```
+
+```{r Bind results and plot GSEA for Effector Tregs, fig.width=8, fig.height=8}
+all.GSEA.EffectorTreg <- rbind(EffectorTreg.Hallmark.df, EffectorTreg.GO.BP.df.top20, EffectorTreg.REACTOME.df.top20)
+all.GSEA.EffectorTreg$DB <- ifelse(grepl("HALLMARK", all.GSEA.EffectorTreg$ID), "HALLMARK", NA)
+all.GSEA.EffectorTreg$DB <- ifelse(grepl("GOBP", all.GSEA.EffectorTreg$ID), "GOBP", all.GSEA.EffectorTreg$DB)
+all.GSEA.EffectorTreg$DB <- ifelse(grepl("REACTOME", all.GSEA.EffectorTreg$ID), "REACTOME", all.GSEA.EffectorTreg$DB)
+all.GSEA.EffectorTreg$DB <- factor(all.GSEA.EffectorTreg$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.EffectorTreg$Status <- ifelse(all.GSEA.EffectorTreg$NES < 0, "post CART", NA)
+all.GSEA.EffectorTreg$Status <- ifelse(all.GSEA.EffectorTreg$NES > 0, "pre CART", all.GSEA.EffectorTreg$Status)
+
+all.GSEA.EffectorTreg.preCAR <- all.GSEA.EffectorTreg %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.EffectorTreg.postCAR <- all.GSEA.EffectorTreg %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.EffectorTreg.top5 <- rbind(all.GSEA.EffectorTreg.preCAR, all.GSEA.EffectorTreg.postCAR)
+all.GSEA.EffectorTreg.top5$Status <- factor(all.GSEA.EffectorTreg.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.EffectorTreg.top5$ID <- gsub("GOBP", "", all.GSEA.EffectorTreg.top5$ID)
+all.GSEA.EffectorTreg.top5$ID <- gsub("REACTOME", "", all.GSEA.EffectorTreg.top5$ID)
+all.GSEA.EffectorTreg.top5$ID <- gsub("HALLMARK", "", all.GSEA.EffectorTreg.top5$ID)
+all.GSEA.EffectorTreg.top5$ID <- gsub("_", " ", all.GSEA.EffectorTreg.top5$ID)
+
+all.GSEA.EffectorTreg.top5 <- all.GSEA.EffectorTreg.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.EffectorTreg.top5.gg <- ggplot2::ggplot(all.GSEA.EffectorTreg.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.EffectorTreg.top5.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_EffectorTreg.tiff", 
+       plot = All.GSEA.EffectorTreg.top5.gg, device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+```

@@ -1,0 +1,1348 @@
+---
+title: "13_DESeq2_GSEA"
+author: "Julia Hitschfel"
+date: "2026-05-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(dplyr)
+library(DESeq2)
+library(ggplot2) 
+library(clusterProfiler)
+library(tidyverse)
+library(msigdbr)
+library(ggforce)
+library(ggrepel)
+library(tidytext)
+library(plotly)
+```
+
+
+## DESeq2 Pseudobulk Timepoints
+
+In this script pseudobulk datasets are generated from the filtered subclustering datasets of B cells, T cells, epithelial cells, and myeloid cells to perform a differential gene expression analysis using DESeq2 to compare the timepoints before treatment with the timepoints after treatment. 
+For fibroblasts, the cells are used from the whole dataset and aggregated based on cell type and timepoint.
+
+```{r Prepare DESeq2 for whole dataset}
+all.cells.seurat <- readRDS("integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+all.cells.seurat$Annotation <- Idents(all.cells.seurat)
+
+all.cells.pseudo <- AggregateExpression(all.cells.seurat, assays = "RNA", 
+                                        group.by = c("tp", "Annotation"), slot = "counts",
+                                        return.seurat = F)
+
+# Manipulate the matrix to fit DESeq2 input
+matrix.t <- t(all.cells.pseudo$RNA)
+count.data.frame <- as.data.frame(matrix.t)
+splitRows <- gsub('.*_', '', rownames(count.data.frame))
+cell.type.list <- split.data.frame(count.data.frame, f = factor(splitRows))
+
+#Retranspose the matrix and fix column names for all elements of the list
+cell.type.list.t <- lapply(cell.type.list, function(x){
+	rownames(x) <- gsub('(.*)_.*', '\\1', rownames(x))
+	t(x)
+})
+
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`Fibroblasts-1`))
+
+col.data$treatment <- ifelse(col.data$samples == "T1" | col.data$samples == "T2" |
+                               col.data$samples == "T3", "pre_CART", "post_CART")
+
+# Perform DESeq2 for Fibroblasts-1
+count.data.Fibro1 <- cell.type.list.t$`Fibroblasts-1`
+class(count.data.Fibro1) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.Fibro1, 
+				colData =  col.data,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+```
+
+Due to the B cell depletion, ambient RNA from IG transcripts are being picked up as differentially expressed in other cell types than B cells. 
+
+### DESeq2 for filtered subclustering datasets 
+
+
+```{r T cell DESeq2}
+
+Tcells <- readRDS("Tcell_subclustering_CCA_Integration_annotated.rds")
+
+Tcells.pseudo <- AggregateExpression(Tcells, assays = "RNA", 
+                                        group.by = "tp", slot = "counts",
+                                        return.seurat = F)
+
+
+# Create meta.data for count matrix
+Tcell.numbers <- Tcells@meta.data %>% group_by(tp) %>% summarise(Tcell.count = n())
+Tcell.numbers$tp <- paste0("g", Tcell.numbers$tp)
+Tcell.numbers$treatment <- ifelse(Tcell.numbers$tp == "T1" | 
+                                    Tcell.numbers$tp == "T2" |
+                               Tcell.numbers$tp == "T3", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(Tcell.numbers, aes(x=tp, y=Tcell.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of T cells") +
+    geom_text(aes(label=Tcell.count), vjust=-0.5)
+
+# Perform DESeq2 for Tcell pseudobulk, likely ambient RNA from IG transcripts is removed here before differential expression analysis
+count.data.Tcells <- as.matrix(Tcells.pseudo$RNA)
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.Tcells)) == T), 
+                    which(grepl("^IGL", rownames(count.data.Tcells)) == T), 
+                    which(grepl("^IGK", rownames(count.data.Tcells)) == T))
+count.data.Tcells.noIG <- count.data.Tcells[-IG.transcripts,]
+class(count.data.Tcells.noIG) <- "integer"
+
+
+dds.Tcells <- DESeqDataSetFromMatrix(countData = count.data.Tcells.noIG, 
+				colData =  Tcell.numbers,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.Tcells)) >= 10
+dds.Tcells <- dds.Tcells[keep,]
+
+dds.Tcells <- DESeq(dds.Tcells)
+
+resultsNames(dds.Tcells)
+
+#Generate results object
+res.Tcells <- results(dds.Tcells, name = "treatment_pre_CART_vs_post_CART")
+res.Tcells 
+
+res.Tcells_df <- as.data.frame(res.Tcells)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.Tcells_df_sort <- res.Tcells_df[order(res.Tcells_df$padj),]
+head(res.Tcells_df_sort, 20)
+
+write.csv(res.Tcells_df_sort, "DESeq2/DEGs_Tzellen.csv")
+```
+
+### Epithelial cells
+
+```{r DESeq2 for Epithelial cells}
+
+ECs <- readRDS("Epithelial_Cells_annotated.rds")
+
+ECs.pseudo <- AggregateExpression(ECs, assays = "RNA", 
+                                        group.by = "tp", slot = "counts",
+                                        return.seurat = F)
+
+# Create meta.data for count matrix
+ECs.numbers <- ECs@meta.data %>% group_by(tp) %>% summarise(ECs.count = n())
+ECs.numbers$tp <- paste0("g", ECs.numbers$tp)
+ECs.numbers$treatment <- ifelse(ECs.numbers$tp == "T1" | 
+                                    ECs.numbers$tp == "T2" |
+                               ECs.numbers$tp == "T3", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(ECs.numbers, aes(x=tp, y=ECs.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of Epithelial cells") +
+    geom_text(aes(label=ECs.count), vjust=-0.5)
+
+# Perform DESeq2 for ECs pseudobulk
+count.data.ECs <- as.matrix(ECs.pseudo$RNA)
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.ECs)) == T), 
+                    which(grepl("^IGL", rownames(count.data.ECs)) == T), 
+                    which(grepl("^IGK", rownames(count.data.ECs)) == T))
+count.data.ECs.noIG <- count.data.ECs[-IG.transcripts,]
+
+class(count.data.ECs.noIG) <- "integer"
+
+
+dds.ECs <- DESeqDataSetFromMatrix(countData = count.data.ECs.noIG, 
+				colData =  ECs.numbers,
+ 				design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.ECs)) >= 10
+dds.ECs <- dds.ECs[keep,]
+
+dds.ECs <- DESeq(dds.ECs)
+
+resultsNames(dds.ECs)
+
+#Generate results object
+res.ECs <- results(dds.ECs, name = "treatment_pre_CART_vs_post_CART")
+res.ECs 
+
+res.ECs_df <- as.data.frame(res.ECs)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.ECs_df_sort <- res.ECs_df[order(res.ECs_df$padj),]
+head(res.ECs_df_sort, 20)
+
+write.csv(res.ECs_df_sort, "DESeq2/DEGs_Epithelzellen.csv")
+```
+
+### Volcano Plot for DEGs Epithelial cells
+
+```{r Volcano for epithelial cells}
+EC.volcano.data <- res.ECs_df
+EC.volcano.data$log10.padj <- -log10(EC.volcano.data$padj)
+EC.volcano.data$diffexpressed <- ifelse(EC.volcano.data$log10.padj > -log10(0.05) & 
+                                        abs(EC.volcano.data$log2FoldChange) > 1, "Up or Down", "NS")
+EC.volcano.data$gene <- rownames(EC.volcano.data)
+
+# Volcano plot
+EC_volcano_plot <- ggplot(EC.volcano.data, aes(x = log2FoldChange, y = log10.padj, 
+                       color = diffexpressed, text = gene)) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("lightgrey", "darkblue")) + 
+  labs(title = "Volcano Plot", x = "Log2(Fold Change)", y = "-log10(adj. P-value)") + 
+  theme_minimal()
+  
+ggplotly(EC_volcano_plot, tooltip = "text")
+```
+
+
+## Pre-ranked GSEA using clusterProfiler
+
+Here a Gene Set Enrichment Analysis (GSEA) is attempted with clusterProfiler. 
+Ranking will be performed using the signed -log10(adj. p value) from the differential expression results.
+Since the ranking of T cells with the -log10(adj. p value) leads to a lot of duplicated values, the signed -log10(p value) will be used here instead. 
+
+### GSEA for T cells
+
+```{r GSEA with clusterProfiler}
+res.Tcells_df_sort$sign.log.10.p <-
+  sign(res.Tcells_df_sort$log2FoldChange)*(-log10(res.Tcells_df_sort$pvalue))
+res.Tcells_df_sort <- res.Tcells_df_sort %>% filter(!is.na(sign.log.10.p))
+res.Tcells_df_sort <- res.Tcells_df_sort[order(res.Tcells_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_T <- as.vector(res.Tcells_df_sort$sign.log.10.p)
+names(ranked_genes_T) <- rownames(res.Tcells_df_sort)
+
+# Import the MSigDB Hallmark Collection
+hallmark<- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+head(hallmark)
+
+h2 <- msigdbr(collection = "H") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#set seed
+set.seed(123)
+#run GSEA
+Tcell.HALLMARK <- GSEA(ranked_genes_T, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(Tcell.HALLMARK)
+
+print(paste0(Tcell.HALLMARK@result$ID, " - NES:  ", Tcell.HALLMARK@result$NES,  " - padj:  ",
+             Tcell.HALLMARK@result$p.adjust))
+
+Tcell.Hallmark.df <- data.frame(ID = Tcell.HALLMARK@result$ID, 
+                             NES = Tcell.HALLMARK@result$NES, 
+                             padj = Tcell.HALLMARK@result$p.adjust)
+
+Tcell.Hallmark.df <- Tcell.Hallmark.df[order(Tcell.Hallmark.df$NES),]
+Tcell.Hallmark.df$ID <- factor(Tcell.Hallmark.df$ID, levels = Tcell.Hallmark.df$ID)
+
+ggplot(Tcell.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+
+```
+
+### GSEA for T cells with GO:BP and REACTOME gene sets
+
+```{r GSEA pre-ranked mit GO und REACTOME, fig.width=10, fig.height=8}
+GO_BP <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+GO_BP_t2n <- msigdbr(collection = "C5", subcollection = "GO:BP") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Tcell.GO.BP <- GSEA(ranked_genes_T, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Tcell.GO.BP.df <- data.frame(ID = Tcell.GO.BP@result$ID, 
+                             NES = Tcell.GO.BP@result$NES, 
+                             padj = Tcell.GO.BP@result$p.adjust)
+
+Tcell.GO.BP.df.top10.up <- Tcell.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+Tcell.GO.BP.df.top10.dn <- Tcell.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.GO.BP.df.top20 <- rbind(Tcell.GO.BP.df.top10.up, Tcell.GO.BP.df.top10.dn)
+
+Tcell.GO.BP.df.top20 <- Tcell.GO.BP.df.top20[order(Tcell.GO.BP.df.top20$NES),]
+Tcell.GO.BP.df.top20$ID <- factor(Tcell.GO.BP.df.top20$ID, levels = Tcell.GO.BP.df.top20$ID)
+
+ggplot(Tcell.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP Top 20 enriched Gene Sets in T cells")
+
+
+## GSEA mit REACTOME
+REACTOME <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gene_symbol)
+
+REACTOME_t2n <- msigdbr(collection = "C2", subcollection = "CP:REACTOME") %>% 
+  dplyr::select(gs_name, gs_description)
+
+#run GSEA
+Tcell.REACTOME <- GSEA(ranked_genes_T, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Tcell.REACTOME.df <- data.frame(ID = Tcell.REACTOME@result$ID, 
+                             NES = Tcell.REACTOME@result$NES, 
+                             padj = Tcell.REACTOME@result$p.adjust)
+
+Tcell.REACTOME.df.top10.up <- Tcell.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Tcell.REACTOME.df.top10.dn <- Tcell.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Tcell.REACTOME.df.top20 <- rbind(Tcell.REACTOME.df.top10.up, Tcell.REACTOME.df.top10.dn)
+
+Tcell.REACTOME.df.top20 <- Tcell.REACTOME.df.top20[order(Tcell.REACTOME.df.top20$NES),]
+Tcell.REACTOME.df.top20$ID <- factor(Tcell.REACTOME.df.top20$ID, levels = Tcell.REACTOME.df.top20$ID)
+
+ggplot(Tcell.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in T cells")
+
+```
+
+```{r Bind results and create dotplot, fig.width=8, fig.height=8}
+all.GSEA.T <- rbind(Tcell.Hallmark.df, Tcell.GO.BP.df.top20, Tcell.REACTOME.df.top20)
+all.GSEA.T$DB <- ifelse(grepl("HALLMARK", all.GSEA.T$ID), "HALLMARK", NA)
+all.GSEA.T$DB <- ifelse(grepl("GOBP", all.GSEA.T$ID), "GOBP", all.GSEA.T$DB)
+all.GSEA.T$DB <- ifelse(grepl("REACTOME", all.GSEA.T$ID), "REACTOME", all.GSEA.T$DB)
+all.GSEA.T$DB <- factor(all.GSEA.T$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.T$Status <- ifelse(all.GSEA.T$NES < 0, "post CART", NA)
+all.GSEA.T$Status <- ifelse(all.GSEA.T$NES > 0, "pre CART", all.GSEA.T$Status)
+
+all.GSEA.T.preCAR <- all.GSEA.T %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.T.postCAR <- all.GSEA.T %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.T.top5 <- rbind(all.GSEA.T.preCAR, all.GSEA.T.postCAR)
+all.GSEA.T.top5$Status <- factor(all.GSEA.T.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.T.top5$ID <- gsub("GOBP", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("REACTOME", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("HALLMARK", "", all.GSEA.T.top5$ID)
+all.GSEA.T.top5$ID <- gsub("_", " ", all.GSEA.T.top5$ID)
+
+all.GSEA.T.top5 <- all.GSEA.T.top5 %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.T.top5.gg <- ggplot2::ggplot(all.GSEA.T.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+All.GSEA.T.top5.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_Tcells.tiff", 
+       plot = All.GSEA.T.top5.gg, device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+```
+
+### GSEA for epithelial cells 
+
+```{r GSEA clusterProfiler Epithelzellen, fig.width = 10, fig.height=8}
+res.ECs_df_sort$sign.log.10.p <- sign(res.ECs_df_sort$log2FoldChange)*(-log10(res.ECs_df_sort$pvalue))
+res.ECs_df_sort <- res.ECs_df_sort %>% filter(!is.na(sign.log.10.p))
+res.ECs_df_sort <- res.ECs_df_sort[order(res.ECs_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes_EC <- as.vector(res.ECs_df_sort$sign.log.10.p)
+names(ranked_genes_EC) <- rownames(res.ECs_df_sort)
+
+#run GSEA
+EC.HALLMARK <- GSEA(ranked_genes_EC, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(EC.HALLMARK)
+
+print(paste0(EC.HALLMARK@result$ID, " - NES:  ", EC.HALLMARK@result$NES,  " - padj:  ",
+             EC.HALLMARK@result$p.adjust))
+
+EC.Hallmark.df <- data.frame(ID = EC.HALLMARK@result$ID, 
+                             NES = EC.HALLMARK@result$NES, 
+                             padj = EC.HALLMARK@result$p.adjust)
+
+EC.Hallmark.df <- EC.Hallmark.df[order(EC.Hallmark.df$NES),]
+EC.Hallmark.df$ID <- factor(EC.Hallmark.df$ID, levels = EC.Hallmark.df$ID)
+write.csv(EC.Hallmark.df, file = "GSEA/epithelial_cells_hallmark.csv")
+
+EC.Hallmark.df.top10.up <- EC.Hallmark.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.Hallmark.df.top10.dn <- EC.Hallmark.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.Hallmark.df.top20 <- rbind(EC.Hallmark.df.top10.up, EC.Hallmark.df.top10.dn)
+
+ggplot(EC.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "HALLMARK Enrichments for Epithelial Cells")
+
+#run GSEA with GO:BP gene sets
+EC.GO.BP <- GSEA(ranked_genes_EC, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+EC.GO.BP.df <- data.frame(ID = EC.GO.BP@result$ID, 
+                             NES = EC.GO.BP@result$NES, 
+                             padj = EC.GO.BP@result$p.adjust)
+
+write.csv(EC.GO.BP.df, file = "GSEA/epithelial_cells_GOBP.csv")
+
+EC.GO.BP.df.top10.up <- EC.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.GO.BP.df.top10.dn <- EC.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.GO.BP.df.top20 <- rbind(EC.GO.BP.df.top10.up, EC.GO.BP.df.top10.dn)
+
+EC.GO.BP.df.top20 <- EC.GO.BP.df.top20[order(EC.GO.BP.df.top20$NES),]
+EC.GO.BP.df.top20$ID <- factor(EC.GO.BP.df.top20$ID, levels = EC.GO.BP.df.top20$ID)
+
+ggplot(EC.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "GO:BP top 20 enriched gene sets in epithelial cells")
+
+
+#run GSEA with REACTOME on epithelial cells
+EC.REACTOME <- GSEA(ranked_genes_EC, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+EC.REACTOME.df <- data.frame(ID = EC.REACTOME@result$ID, 
+                             NES = EC.REACTOME@result$NES, 
+                             padj = EC.REACTOME@result$p.adjust)
+
+write.csv(EC.REACTOME.df, file = "GSEA/epithelial_cells_REACTOME.csv")
+
+EC.REACTOME.df.top10.up <- EC.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+EC.REACTOME.df.top10.dn <- EC.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+EC.REACTOME.df.top20 <- rbind(EC.REACTOME.df.top10.up, EC.REACTOME.df.top10.dn)
+
+EC.REACTOME.df.top20$ID <- ifelse(EC.REACTOME.df.top20$ID ==
+  "REACTOME_SRP_DEPENDENT_COTRANSLATIONAL_PROTEIN_TARGETING_TO_MEMBRANE",
+  "REACTOME_SRP_DEPENDENT_PROTEIN_TARGETING_TO_MEMBRANE", EC.REACTOME.df.top20$ID)
+
+EC.REACTOME.df.top20 <- EC.REACTOME.df.top20[order(EC.REACTOME.df.top20$NES),]
+EC.REACTOME.df.top20$ID <- factor(EC.REACTOME.df.top20$ID, levels = EC.REACTOME.df.top20$ID)
+
+ggplot(EC.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME top 20 enriched gene sets in epithelial cells")
+```
+
+
+```{r GSEA summary plot Epithelzellen, fig.width=8, fig.height=8}
+all.GSEA.EC <- rbind(EC.Hallmark.df.top20, EC.GO.BP.df.top20)
+all.GSEA.EC$DB <- ifelse(grepl("HALLMARK", all.GSEA.EC$ID), "HALLMARK", NA)
+all.GSEA.EC$DB <- ifelse(grepl("GOBP", all.GSEA.EC$ID), "GOBP", all.GSEA.EC$DB)
+all.GSEA.EC$DB <- factor(all.GSEA.EC$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.EC$Status <- ifelse(all.GSEA.EC$NES < 0, "post CART", NA)
+all.GSEA.EC$Status <- ifelse(all.GSEA.EC$NES > 0, "pre CART", all.GSEA.EC$Status)
+all.GSEA.EC$Status <- factor(all.GSEA.EC$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.EC$ID <- gsub("GOBP", "", all.GSEA.EC$ID)
+all.GSEA.EC$ID <- gsub("HALLMARK", "", all.GSEA.EC$ID)
+all.GSEA.EC$ID <- gsub("_", " ", all.GSEA.EC$ID)
+
+all.GSEA.EC <- all.GSEA.EC %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.EC.gg <- ggplot2::ggplot(all.GSEA.EC, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+
+All.GSEA.EC.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_Epithelial_cells.tiff",
+       plot = All.GSEA.EC.gg, device = "tiff", dpi = 300, width = 7, height = 8, units = "in", compression = "lzw")
+
+ggplot2::ggsave("Figures/Publication_ready/GSEA_summary_Epithelial_cells.pdf",
+       plot = All.GSEA.EC.gg, device = "pdf", dpi = 300, width = 7, height = 8, units = "in")
+
+## Custom Gene Sets
+EC.GO.BP.select.gs <- c("GOBP_CELL_KILLING", "GOBP_HEMOSTASIS", "GOBP_WOUND_HEALING", "GOBP_REGULATION_OF_IMMUNE_EFFECTOR_PROCESS", 
+                        "GOBP_GRANULOCYTE_ACTIVATION", "GOBP_RNA_SPLICING_VIA_TRANSESTERIFICATION_REACTIONS",
+                        "GOBP_RIBOSOMAL_SMALL_SUBUNIT_BIOGENESIS", "GOBP_EXCRETION", "GOBP_RIBOSOME_BIOGENESIS", "GOBP_MRNA_PROCESSING")
+EC.GO.BP.df.select <- EC.GO.BP.df %>% filter(ID %in% EC.GO.BP.select.gs)
+EC.GO.BP.df.select.sort <- EC.GO.BP.df.select[order(EC.GO.BP.df.select$NES),]
+EC.GO.BP.df.select.sort$ID <- factor(EC.GO.BP.df.select.sort$ID, levels = EC.GO.BP.df.select.sort$ID)
+
+
+EC.Hallmark.select.gs <- c("HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_GLYCOLYSIS", "HALLMARK_APICAL_JUNCTION", 
+                           "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_INFLAMMATORY_RESPONSE", "HALLMARK_MYC_TARGETS_V1", 
+                           "HALLMARK_MYC_TARGETS_V2", "HALLMARK_E2F_TARGETS", "HALLMARK_G2M_CHECKPOINT", "HALLMARK_PANCREAS_BETA_CELLS")
+EC.Hallmark.df.select <- EC.Hallmark.df %>% filter(ID %in% EC.Hallmark.select.gs)
+EC.Hallmark.df.select.sort <- EC.Hallmark.df.select[order(EC.Hallmark.df.select$NES),]
+EC.Hallmark.df.select.sort$ID <- factor(EC.Hallmark.df.select.sort$ID, levels = EC.Hallmark.df.select.sort$ID)
+
+all.GSEA.EC.custom <- rbind(EC.Hallmark.df.select.sort, EC.GO.BP.df.select.sort)
+all.GSEA.EC.custom$DB <- ifelse(grepl("HALLMARK", all.GSEA.EC.custom$ID), "HALLMARK", NA)
+all.GSEA.EC.custom$DB <- ifelse(grepl("GOBP", all.GSEA.EC.custom$ID), "GOBP", all.GSEA.EC.custom$DB)
+all.GSEA.EC.custom$DB <- factor(all.GSEA.EC.custom$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.EC.custom$Status <- ifelse(all.GSEA.EC.custom$NES < 0, "post CART", NA)
+all.GSEA.EC.custom$Status <- ifelse(all.GSEA.EC.custom$NES > 0, "pre CART", all.GSEA.EC.custom$Status)
+all.GSEA.EC.custom$Status <- factor(all.GSEA.EC.custom$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.EC.custom$ID <- gsub("GOBP", "", all.GSEA.EC.custom$ID)
+all.GSEA.EC.custom$ID <- gsub("HALLMARK", "", all.GSEA.EC.custom$ID)
+all.GSEA.EC.custom$ID <- gsub("_", " ", all.GSEA.EC.custom$ID)
+
+all.GSEA.EC.custom <- all.GSEA.EC.custom %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.EC.custom.gg <- ggplot2::ggplot(all.GSEA.EC.custom, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+
+All.GSEA.EC.custom.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_Epithelial_cells_custom.tiff",
+       plot = All.GSEA.EC.custom.gg, device = "tiff", dpi = 300, width = 7, height = 7, units = "in", compression = "lzw")
+
+ggplot2::ggsave("Figures/Publication_ready/GSEA_summary_Epithelial_cells_custom.pdf",
+       plot = All.GSEA.EC.custom.gg, device = "pdf", dpi = 300, width = 7, height = 7, units = "in")
+```
+
+## DESeq2 and GSEA for myeloid cells 
+
+```{r Myeloid cells}
+myeloid.seurat <- readRDS("Myeloid_Cells_annotated.rds")
+
+all.myeloid.pseudo <- AggregateExpression(myeloid.seurat, assays = "RNA", 
+                                        group.by = "tp", slot = "counts",
+                                        return.seurat = F)
+# Create meta.data for count matrix
+Myeloid.numbers <- myeloid.seurat@meta.data %>% group_by(tp) %>% summarise(Myeloid.count = n())
+Myeloid.numbers$tp <- paste0("g", Myeloid.numbers$tp)
+Myeloid.numbers$treatment <- ifelse(Myeloid.numbers$tp == "T1" | 
+                                    Myeloid.numbers$tp == "T2" |
+                               Myeloid.numbers$tp == "T3", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(Myeloid.numbers, aes(x=tp, y=Myeloid.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of Myeloid cells") +
+    geom_text(aes(label=Myeloid.count), vjust=-0.5)
+
+# Perform DESeq2 for Myeloid pseudobulk
+count.data.all.myeloid <- as.matrix(all.myeloid.pseudo$RNA)
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.all.myeloid)) == T), 
+                    which(grepl("^IGL", rownames(count.data.all.myeloid)) == T), 
+                    which(grepl("^IGK", rownames(count.data.all.myeloid)) == T))
+
+count.data.all.myeloid.noIG <- count.data.all.myeloid[-IG.transcripts,]
+class(count.data.all.myeloid.noIG) <- "integer"
+
+dds.all.myeloid <- DESeqDataSetFromMatrix(countData = count.data.all.myeloid.noIG, 
+                colData =  Myeloid.numbers,
+                design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.all.myeloid)) >= 10
+dds.all.myeloid <- dds.all.myeloid[keep,]
+
+dds.all.myeloid <- DESeq(dds.all.myeloid)
+
+resultsNames(dds.all.myeloid)
+
+#Generate results object
+res.all.myeloid <- results(dds.all.myeloid, name = "treatment_pre_CART_vs_post_CART")
+res.all.myeloid 
+
+res.all.myeloid_df <- as.data.frame(res.all.myeloid)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.all.myeloid_df_sort <- res.all.myeloid_df[order(res.all.myeloid_df$padj),]
+head(res.all.myeloid_df_sort, 20)
+
+write.csv(res.all.myeloid_df_sort, "DESeq2/DEGs_Myeloid_cells.csv")
+
+# Violin Plot of DEGs
+res.all.myeloid_df_volcano <- res.all.myeloid_df
+res.all.myeloid_df_volcano$neg.log10.padj <- -log10(res.all.myeloid_df_volcano$padj)
+res.all.myeloid_df_volcano <- res.all.myeloid_df_volcano %>% filter(!is.na(neg.log10.padj))
+
+
+res.all.myeloid_df_volcano <- res.all.myeloid_df_volcano %>%
+  mutate(gene_type = case_when(log2FoldChange >= 1 & padj <= 0.05 ~ "up",
+                               log2FoldChange <= -1 & padj <= 0.05 ~ "down",
+                               TRUE ~ "ns"))  
+
+cols <- c("up" = "#ffad73", "down" = "#26b3ff", "ns" = "grey") 
+sizes <- c("up" = 2, "down" = 2, "ns" = 1) 
+alphas <- c("up" = 1, "down" = 1, "ns" = 0.5)
+
+significant.genes <- res.all.myeloid_df_volcano %>% filter(padj <= 0.05)
+significant.genes$geneID <- rownames(significant.genes)
+  
+res.all.myeloid_df_volcano %>%
+  ggplot(aes(x = log2FoldChange,
+             y = neg.log10.padj,
+             fill = gene_type,    
+             size = gene_type,
+             alpha = gene_type)) + 
+  geom_point(shape = 21, # Specify shape and colour as fixed local parameters    
+             colour = "black") + 
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+   geom_label_repel(data = significant.genes, # Add labels last to appear as the top layer  
+                   aes(label = geneID),
+                   force = 2,
+                   nudge_y = 0.25) +
+  scale_fill_manual(values = cols) + # Modify point colour
+  scale_size_manual(values = sizes) + # Modify point size
+  scale_alpha_manual(values = alphas) + # Modify point transparency
+  scale_x_continuous(breaks = c(seq(-8, 8, 2)),       
+                     limits = c(-8, 8)) + 
+  labs(x = "log2(Fold Change)", y = "-log10(adj. P value)", 
+       title = "Differentially expressed genes in myeloid cells pre and post CAR T") + theme_bw()
+```
+
+### HALLMARK for myeloid cells 
+
+```{r GSEA for all myeloid cells}
+res.all.myeloid_df_sort$sign.log.10.p <-
+  sign(res.all.myeloid_df_sort$log2FoldChange)*(-log10(res.all.myeloid_df_sort$pvalue))
+res.all.myeloid_df_sort <- res.all.myeloid_df_sort %>% filter(!is.na(sign.log.10.p))
+res.all.myeloid_df_sort <- res.all.myeloid_df_sort[order(res.all.myeloid_df_sort$sign.log.10.p, 
+                                                         decreasing = T),]
+
+ranked_genes_M <- as.vector(res.all.myeloid_df_sort$sign.log.10.p)
+names(ranked_genes_M) <- rownames(res.all.myeloid_df_sort)
+
+#run GSEA
+All.Myeloid.HALLMARK <- GSEA(ranked_genes_M, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(All.Myeloid.HALLMARK)
+
+print(paste0(All.Myeloid.HALLMARK@result$ID, " - NES:  ", All.Myeloid.HALLMARK@result$NES,  " - padj:  ",
+             All.Myeloid.HALLMARK@result$p.adjust))
+
+All.Myeloid.Hallmark.df <- data.frame(ID = All.Myeloid.HALLMARK@result$ID, 
+                             NES = All.Myeloid.HALLMARK@result$NES, 
+                             padj = All.Myeloid.HALLMARK@result$p.adjust)
+
+All.Myeloid.Hallmark.df <- All.Myeloid.Hallmark.df[order(All.Myeloid.Hallmark.df$NES),]
+All.Myeloid.Hallmark.df$ID <- factor(All.Myeloid.Hallmark.df$ID, levels = All.Myeloid.Hallmark.df$ID)
+
+ggplot(All.Myeloid.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+```
+
+### GO and REACTOME for all myeloid cells 
+
+```{r Go and REACTOME for myeloid}
+
+#run GSEA
+All.Myeloid.GO.BP <- GSEA(ranked_genes_M, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+All.Myeloid.GO.BP.df <- data.frame(ID = All.Myeloid.GO.BP@result$ID, 
+                             NES = All.Myeloid.GO.BP@result$NES, 
+                             padj = All.Myeloid.GO.BP@result$p.adjust)
+
+All.Myeloid.GO.BP.df.top10.up <- All.Myeloid.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+All.Myeloid.GO.BP.df.top10.dn <- All.Myeloid.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+All.Myeloid.GO.BP.df.top20 <- rbind(All.Myeloid.GO.BP.df.top10.up, All.Myeloid.GO.BP.df.top10.dn)
+
+All.Myeloid.GO.BP.df.top20 <- All.Myeloid.GO.BP.df.top20[order(All.Myeloid.GO.BP.df.top20$NES),]
+All.Myeloid.GO.BP.df.top20$ID <- factor(All.Myeloid.GO.BP.df.top20$ID, levels = All.Myeloid.GO.BP.df.top20$ID)
+
+
+ggplot(All.Myeloid.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + labs(title = "GO:BP Top 20 enriched Gene Sets in Myeloid cells") + theme_minimal() + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+
+## GSEA mit REACTOME
+
+#run GSEA
+All.Myeloid.REACTOME <- GSEA(ranked_genes_M, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+All.Myeloid.REACTOME.df <- data.frame(ID = All.Myeloid.REACTOME@result$ID, 
+                             NES = All.Myeloid.REACTOME@result$NES, 
+                             padj = All.Myeloid.REACTOME@result$p.adjust)
+
+All.Myeloid.REACTOME.df.top10.up <- All.Myeloid.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+All.Myeloid.REACTOME.df.top10.dn <- All.Myeloid.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+All.Myeloid.REACTOME.df.top20 <- rbind(All.Myeloid.REACTOME.df.top10.up, All.Myeloid.REACTOME.df.top10.dn)
+
+All.Myeloid.REACTOME.df.top20$ID <- ifelse(All.Myeloid.REACTOME.df.top20$ID ==
+  "REACTOME_SRP_DEPENDENT_COTRANSLATIONAL_PROTEIN_TARGETING_TO_MEMBRANE",
+  "REACTOME_SRP_DEPENDENT_PROTEIN_TARGETING_TO_MEMBRANE", All.Myeloid.REACTOME.df.top20$ID)
+
+
+All.Myeloid.REACTOME.df.top20 <- All.Myeloid.REACTOME.df.top20[order(All.Myeloid.REACTOME.df.top20$NES),]
+All.Myeloid.REACTOME.df.top20$ID <- factor(All.Myeloid.REACTOME.df.top20$ID, levels = All.Myeloid.REACTOME.df.top20$ID)
+
+ggplot(All.Myeloid.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in Myeloid cells") + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+```
+
+
+## DESeq2 and GSEA for macrophages only 
+
+```{r DEseq2 for macrophages}
+Macrophage.Idents <- levels(Idents(myeloid.seurat))[grep("*Macrophage*", levels(Idents(myeloid.seurat)))]
+Myeloid.macrophage <- subset(myeloid.seurat, idents = Macrophage.Idents)
+
+Myeloid.macrophage.pseudo <- AggregateExpression(Myeloid.macrophage, assays = "RNA", 
+                                        group.by = "tp", slot = "counts",
+                                        return.seurat = F)
+
+# Create meta.data for count matrix
+Myeloid.macrophage.numbers <- Myeloid.macrophage@meta.data %>% group_by(tp) %>% summarise(Macro.count = n())
+Myeloid.macrophage.numbers$tp <- paste0("g", Myeloid.macrophage.numbers$tp)
+Myeloid.macrophage.numbers$treatment <- ifelse(Myeloid.macrophage.numbers$tp == "T1" | 
+                                    Myeloid.macrophage.numbers$tp == "T2" |
+                               Myeloid.macrophage.numbers$tp == "T3", "pre_CART", "post_CART")
+
+# Visualize cell counts
+ggplot(Myeloid.macrophage.numbers, aes(x=tp, y=Macro.count, fill=treatment)) +
+    geom_bar(stat="identity", color="black") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    labs(x="Timepoint", y="Number of Macrophages") +
+    geom_text(aes(label=Macro.count), vjust=-0.5)
+
+# Perform DESeq2 for macrophages pseudobulk
+count.data.all.macrophages <- as.matrix(Myeloid.macrophage.pseudo$RNA)
+
+IG.transcripts <- c(which(grepl("^IGH", rownames(count.data.all.macrophages)) == T), 
+                    which(grepl("^IGL", rownames(count.data.all.macrophages)) == T), 
+                    which(grepl("^IGK", rownames(count.data.all.macrophages)) == T))
+
+count.data.all.macrophages.noIG <- count.data.all.macrophages[-IG.transcripts,]
+class(count.data.all.macrophages.noIG) <- "integer"
+
+#macrophages numbers now has underscores, while the matrix has dashes.... change to dashes in macrophages numbers:
+Myeloid.macrophage.numbers$tp <- gsub("_", "-", Myeloid.macrophage.numbers$tp)
+
+dds.all.macrophages <- DESeqDataSetFromMatrix(countData = count.data.all.macrophages.noIG, 
+                colData =  Myeloid.macrophage.numbers,
+                design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds.all.macrophages)) >= 10
+dds.all.macrophages <- dds.all.macrophages[keep,]
+
+dds.all.macrophages <- DESeq(dds.all.macrophages)
+
+resultsNames(dds.all.macrophages)
+
+#Generate results object
+res.all.macrophages <- results(dds.all.macrophages, name = "treatment_pre_CART_vs_post_CART")
+res.all.macrophages
+
+res.all.macrophages_df <- as.data.frame(res.all.macrophages)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res.all.macrophages_df_sort <- res.all.macrophages_df[order(res.all.macrophages_df$padj),]
+head(res.all.macrophages_df_sort, 20)
+
+write.csv(res.all.macrophages_df_sort, "DESeq2/DEGs_macrophages.csv")
+
+# Violin Plot of DEGs
+res.all.macrophages_df_volcano <- res.all.macrophages_df
+res.all.macrophages_df_volcano$neg.log10.padj <- -log10(res.all.macrophages_df_volcano$padj)
+res.all.macrophages_df_volcano <- res.all.macrophages_df_volcano %>% filter(!is.na(neg.log10.padj))
+
+
+res.all.macrophages_df_volcano <- res.all.macrophages_df_volcano %>%
+  mutate(gene_type = case_when(log2FoldChange >= 1 & padj <= 0.05 ~ "up",
+                               log2FoldChange <= -1 & padj <= 0.05 ~ "down",
+                               TRUE ~ "ns"))  
+
+cols <- c("up" = "#ffad73", "down" = "#26b3ff", "ns" = "grey") 
+sizes <- c("up" = 2, "down" = 2, "ns" = 1) 
+alphas <- c("up" = 1, "down" = 1, "ns" = 0.5)
+
+significant.genes <- res.all.macrophages_df_volcano %>% filter(padj <= 0.05)
+significant.genes$geneID <- rownames(significant.genes)
+  
+res.all.macrophages_df_volcano %>%
+  ggplot(aes(x = log2FoldChange,
+             y = neg.log10.padj,
+             fill = gene_type,    
+             size = gene_type,
+             alpha = gene_type)) + 
+  geom_point(shape = 21, # Specify shape and colour as fixed local parameters    
+             colour = "black") + 
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+   geom_label_repel(data = significant.genes, # Add labels last to appear as the top layer  
+                   aes(label = geneID),
+                   force = 2,
+                   nudge_y = 0.25) +
+  scale_fill_manual(values = cols) + # Modify point colour
+  scale_size_manual(values = sizes) + # Modify point size
+  scale_alpha_manual(values = alphas) + # Modify point transparency
+  scale_x_continuous(breaks = c(seq(-8, 8, 2)),       
+                     limits = c(-8, 8)) + 
+  labs(x = "log2(Fold Change)", y = "-log10(adj. P value)", 
+       title = "Differentially expressed genes in macrophages pre and post CAR T") + theme_bw()
+```
+
+
+```{r GSEA for macrophages}
+res.all.macrophages_df_sort$sign.log.10.p <-
+  sign(res.all.macrophages_df_sort$log2FoldChange)*(-log10(res.all.macrophages_df_sort$pvalue))
+res.all.macrophages_df_sort <- res.all.macrophages_df_sort %>% filter(!is.na(sign.log.10.p))
+res.all.macrophages_df_sort <- res.all.macrophages_df_sort[order(res.all.macrophages_df_sort$sign.log.10.p, 
+                                                         decreasing = T),]
+
+ranked_genes_M <- as.vector(res.all.macrophages_df_sort$sign.log.10.p)
+names(ranked_genes_M) <- rownames(res.all.macrophages_df_sort)
+
+#run GSEA
+All.macrophages.HALLMARK <- GSEA(ranked_genes_M, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(All.macrophages.HALLMARK)
+
+print(paste0(All.macrophages.HALLMARK@result$ID, " - NES:  ", All.macrophages.HALLMARK@result$NES,  " - padj:  ",
+             All.macrophages.HALLMARK@result$p.adjust))
+
+All.macrophages.Hallmark.df <- data.frame(ID = All.macrophages.HALLMARK@result$ID, 
+                             NES = All.macrophages.HALLMARK@result$NES, 
+                             padj = All.macrophages.HALLMARK@result$p.adjust)
+
+All.macrophages.Hallmark.df <- All.macrophages.Hallmark.df[order(All.macrophages.Hallmark.df$NES),]
+All.macrophages.Hallmark.df$ID <- factor(All.macrophages.Hallmark.df$ID, levels = All.macrophages.Hallmark.df$ID)
+
+write.csv(All.macrophages.Hallmark.df, file = "GSEA/Macrophages_Hallmark.csv")
+
+ggplot(All.macrophages.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+
+```
+
+```{r GSEA with GO and REACTOME for macrophages}
+#run GSEA with GO:BP 
+All.macrophages.GO <- GSEA(ranked_genes_M, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+head(All.macrophages.GO)
+
+print(paste0(All.macrophages.GO@result$ID, " - NES:  ", All.macrophages.GO@result$NES,  " - padj:  ",
+             All.macrophages.GO@result$p.adjust))
+
+All.macrophages.GO.df <- data.frame(ID = All.macrophages.GO@result$ID, 
+                             NES = All.macrophages.GO@result$NES, 
+                             padj = All.macrophages.GO@result$p.adjust)
+
+write.csv(All.macrophages.GO.df, file = "GSEA/Macrophages_GOBP.csv")
+
+All.macrophages.GO.df.top10.up <- All.macrophages.GO.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+All.macrophages.GO.df.top10.dn <- All.macrophages.GO.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+All.macrophages.GO.df.top20 <- rbind(All.macrophages.GO.df.top10.up, All.macrophages.GO.df.top10.dn)
+
+All.macrophages.GO.df.top20 <- All.macrophages.GO.df.top20[order(All.macrophages.GO.df.top20$NES),]
+All.macrophages.GO.df.top20$ID <- factor(All.macrophages.GO.df.top20$ID, levels = All.macrophages.GO.df.top20$ID)
+
+ggplot(All.macrophages.GO.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+
+#run GSEA
+All.macrophages.REACTOME <- GSEA(ranked_genes_M, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+All.macrophages.REACTOME.df <- data.frame(ID = All.macrophages.REACTOME@result$ID, 
+                             NES = All.macrophages.REACTOME@result$NES, 
+                             padj = All.macrophages.REACTOME@result$p.adjust)
+
+write.csv(All.macrophages.REACTOME.df, file = "GSEA/Macrophages_Reactome.csv")
+
+All.macrophages.REACTOME.df.top10.up <- All.macrophages.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+All.macrophages.REACTOME.df.top10.dn <- All.macrophages.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+All.macrophages.REACTOME.df.top20 <- rbind(All.macrophages.REACTOME.df.top10.up, All.macrophages.REACTOME.df.top10.dn)
+
+All.macrophages.REACTOME.df.top20 <- All.macrophages.REACTOME.df.top20[order(All.macrophages.REACTOME.df.top20$NES),]
+All.macrophages.REACTOME.df.top20$ID <- factor(All.macrophages.REACTOME.df.top20$ID, 
+                                               levels = All.macrophages.REACTOME.df.top20$ID)
+
+ggplot(All.macrophages.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in macrophages") + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+```
+
+```{r GSEA combined figure macrophages, fig.width=8, fig.height=10}
+all.GSEA.mac <- rbind(All.macrophages.Hallmark.df, All.macrophages.GO.df.top20, All.macrophages.REACTOME.df.top20)
+all.GSEA.mac$DB <- ifelse(grepl("HALLMARK", all.GSEA.mac$ID), "HALLMARK", NA)
+all.GSEA.mac$DB <- ifelse(grepl("GOBP", all.GSEA.mac$ID), "GOBP", all.GSEA.mac$DB)
+all.GSEA.mac$DB <- ifelse(grepl("REACTOME", all.GSEA.mac$ID), "REACTOME", all.GSEA.mac$DB)
+all.GSEA.mac$DB <- factor(all.GSEA.mac$DB, levels = c("HALLMARK", "GOBP", "REACTOME"))
+
+all.GSEA.mac$Status <- ifelse(all.GSEA.mac$NES < 0, "post CART", NA)
+all.GSEA.mac$Status <- ifelse(all.GSEA.mac$NES > 0, "pre CART", all.GSEA.mac$Status)
+
+all.GSEA.mac.preCAR <- all.GSEA.mac %>% filter(Status == "pre CART") %>% group_by(DB) %>% slice_max(NES, n = 5)
+all.GSEA.mac.postCAR <- all.GSEA.mac %>% filter(Status == "post CART") %>% group_by(DB) %>% slice_min(NES, n = 5)
+all.GSEA.mac.top5 <- rbind(all.GSEA.mac.preCAR, all.GSEA.mac.postCAR)
+all.GSEA.mac.top5$Status <- factor(all.GSEA.mac.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.mac.top5$ID <- gsub("GOBP", "", all.GSEA.mac.top5$ID)
+all.GSEA.mac.top5$ID <- gsub("REACTOME", "", all.GSEA.mac.top5$ID)
+all.GSEA.mac.top5$ID <- gsub("HALLMARK", "", all.GSEA.mac.top5$ID)
+all.GSEA.mac.top5$ID <- gsub("_", " ", all.GSEA.mac.top5$ID)
+
+all.GSEA.mac.top5 <- all.GSEA.mac.top5 %>% mutate(log.10.padj = -log10(padj))
+
+ggplot(all.GSEA.mac.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave("Figures/GSEA_summary_Macrophages.tiff", 
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 8, height = 8, units = "in", compression = "lzw")
+
+
+## Without REACTOME
+all.GSEA.mac.noREACT <- rbind(All.macrophages.Hallmark.df, All.macrophages.GO.df.top20)
+all.GSEA.mac.noREACT$DB <- ifelse(grepl("HALLMARK", all.GSEA.mac.noREACT$ID), "HALLMARK", NA)
+all.GSEA.mac.noREACT$DB <- ifelse(grepl("GOBP", all.GSEA.mac.noREACT$ID), "GOBP", all.GSEA.mac.noREACT$DB)
+all.GSEA.mac.noREACT$DB <- factor(all.GSEA.mac.noREACT$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.mac.noREACT$Status <- ifelse(all.GSEA.mac.noREACT$NES < 0, "post CART", NA)
+all.GSEA.mac.noREACT$Status <- ifelse(all.GSEA.mac.noREACT$NES > 0, "pre CART", all.GSEA.mac.noREACT$Status)
+
+all.GSEA.mac.noREACT.preCAR <- all.GSEA.mac.noREACT %>% filter(Status == "pre CART") %>% group_by(DB) %>% 
+  slice_max(NES, n = 5)
+all.GSEA.mac.noREACT.postCAR <- all.GSEA.mac.noREACT %>% filter(Status == "post CART") %>% group_by(DB) %>% 
+  slice_min(NES, n = 5)
+all.GSEA.mac.noREACT.top5 <- rbind(all.GSEA.mac.noREACT.preCAR, all.GSEA.mac.noREACT.postCAR)
+all.GSEA.mac.noREACT.top5$Status <- factor(all.GSEA.mac.noREACT.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.mac.noREACT.top5$ID <- gsub("GOBP", "", all.GSEA.mac.noREACT.top5$ID)
+all.GSEA.mac.noREACT.top5$ID <- gsub("HALLMARK", "", all.GSEA.mac.noREACT.top5$ID)
+all.GSEA.mac.noREACT.top5$ID <- gsub("_", " ", all.GSEA.mac.noREACT.top5$ID)
+
+all.GSEA.mac.noREACT.top5 <- all.GSEA.mac.noREACT.top5 %>% mutate(log.10.padj = -log10(padj))
+
+ggplot(all.GSEA.mac.noREACT.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+
+ggsave("Figures/GSEA_summary_Macrophages_noREACTOME.tiff", 
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 7, height = 7, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/GSEA_summary_Macrophages_noREACTOME.pdf", 
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 7, height = 7, units = "in")
+```
+
+```{r Macrophages custom gene sets}
+## Custom Gene Sets
+Mac.GO.BP.select.gs <- c("GOBP_GLYCOLYTIC_PROCESS_THROUGH_FRUCTOSE_6_PHOSPHATE", "GOBP_POSITIVE_REGULATION_OF_VASCULATURE_DEVELOPMENT",
+                         "GOBP_POSITIVE_REGULATION_OF_LEUKOCYTE_MIGRATION", "GOBP_PHAGOCYTOSIS", 
+                        "GOBP_FC_RECEPTOR_MEDIATED_STIMULATORY_SIGNALING_PATHWAY", "GOBP_ELECTRON_TRANSPORT_CHAIN",
+                        "GOBP_CYTOPLASMIC_TRANSLATION", "GOBP_OXIDATIVE_PHOSPHORYLATION",
+                        "GOBP_ATP_SYNTHESIS_COUPLED_ELECTRON_TRANSPORT",
+                        "GOBP_PROTON_MOTIVE_FORCE_DRIVEN_ATP_SYNTHESIS")
+Mac.GO.BP.df.select <- All.macrophages.GO.df %>% filter(ID %in% Mac.GO.BP.select.gs)
+Mac.GO.BP.df.select.sort <- Mac.GO.BP.df.select[order(Mac.GO.BP.df.select$NES),]
+Mac.GO.BP.df.select.sort$ID <- factor(Mac.GO.BP.df.select.sort$ID, levels = Mac.GO.BP.df.select.sort$ID)
+
+
+Mac.Hallmark.select.gs <- c("HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_GLYCOLYSIS", "HALLMARK_APICAL_JUNCTION", 
+                           "HALLMARK_HYPOXIA", "HALLMARK_INFLAMMATORY_RESPONSE", "HALLMARK_E2F_TARGETS", "HALLMARK_KRAS_SIGNALING_DN", 
+                           "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_INTERFERON_ALPHA_RESPONSE", 
+                           "HALLMARK_INTERFERON_GAMMA_RESPONSE")
+Mac.Hallmark.df.select <- All.macrophages.Hallmark.df %>% filter(ID %in% Mac.Hallmark.select.gs)
+Mac.Hallmark.df.select.sort <- Mac.Hallmark.df.select[order(Mac.Hallmark.df.select$NES),]
+Mac.Hallmark.df.select.sort$ID <- factor(Mac.Hallmark.df.select.sort$ID, levels = Mac.Hallmark.df.select.sort$ID)
+
+all.GSEA.Mac.custom <- rbind(Mac.Hallmark.df.select.sort, Mac.GO.BP.df.select.sort)
+all.GSEA.Mac.custom$DB <- ifelse(grepl("HALLMARK", all.GSEA.Mac.custom$ID), "HALLMARK", NA)
+all.GSEA.Mac.custom$DB <- ifelse(grepl("GOBP", all.GSEA.Mac.custom$ID), "GOBP", all.GSEA.Mac.custom$DB)
+all.GSEA.Mac.custom$DB <- factor(all.GSEA.Mac.custom$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.Mac.custom$Status <- ifelse(all.GSEA.Mac.custom$NES < 0, "post CART", NA)
+all.GSEA.Mac.custom$Status <- ifelse(all.GSEA.Mac.custom$NES > 0, "pre CART", all.GSEA.Mac.custom$Status)
+all.GSEA.Mac.custom$Status <- factor(all.GSEA.Mac.custom$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.Mac.custom$ID <- gsub("GOBP", "", all.GSEA.Mac.custom$ID)
+all.GSEA.Mac.custom$ID <- gsub("HALLMARK", "", all.GSEA.Mac.custom$ID)
+all.GSEA.Mac.custom$ID <- gsub("_", " ", all.GSEA.Mac.custom$ID)
+
+all.GSEA.Mac.custom <- all.GSEA.Mac.custom %>% mutate(log.10.padj = -log10(padj))
+
+All.GSEA.Mac.custom.gg <- ggplot2::ggplot(all.GSEA.Mac.custom, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+
+All.GSEA.Mac.custom.gg
+
+ggplot2::ggsave("Figures/GSEA_summary_Macrophages_custom.tiff",
+       plot = All.GSEA.Mac.custom.gg, device = "tiff", dpi = 300, width = 7.5, height = 7.5, units = "in", compression = "lzw")
+
+ggplot2::ggsave("Figures/Publication_ready/GSEA_summary_Macrophages_custom.pdf",
+       plot = All.GSEA.Mac.custom.gg, device = "pdf", dpi = 300, width = 7.5, height = 7.5, units = "in")
+```
+
+
+### Custom Gene Set Enrichment with Uzzan et al. IgG Immune complex signature
+
+```{r IgG immune complex}
+# Custom gene set 
+Uzzan_IgG_gene_set <- c("IL1RN", "INHBA", "EGR2", "TGM2", "SPP1", "PLEK", "DUSP7", "SOCS3", "GDF15", "CPEB4",
+                        "BCL2L1", "PDPN", "PTGS2", "IL1A", "EDN1", "SLAMF1", "GALNT7", "GBP2", "DNAJC19", "GSDMD",
+                        "MYO1F", "ARHGEF10L", "APOL3", "BMF", "TLR8")
+
+Uzzan_LPS_gene_set <- c("HIF1A", "SOD2", "HCAR3", "FLT1", "IL1B", "CFB", "DDIT4", "G0S2", "TREM1", "CLEC4E", "IL15RA",
+                        "RND1", "REV3L", "SLCO4A1", "CXCL9", "AGRN", "SLC25A37", "TIMP1", "IRAK3", "IFITM1", "C4orf3",
+                        "SPP1", "CALCRL", "SPON1", "SLAMF1", "TGM2", "SMAD3", "MMP3", "GPC1", "PTCH1", "CYP27A1", "ST18",
+                        "FKBP4", "THEMIS2", "SULF2", "PLAU", "IRF2BP2")
+
+custom_gene_set <- list(Uzzan_IgG_gene_set, Uzzan_LPS_gene_set)
+names(custom_gene_set) <- c("Uzzan_IgG_complex", "Uzzan_LPS_stim")
+
+term2gene <- stack(custom_gene_set) %>%
+    dplyr::select(term = ind, gene = values)
+
+#run GSEA
+All.macrophages.Uzzan.IgG <- GSEA(ranked_genes_M, TERM2GENE = term2gene, seed=TRUE)
+
+head(All.macrophages.Uzzan.IgG)
+
+print(paste0(All.macrophages.Uzzan.IgG@result$ID, " - NES:  ", All.macrophages.Uzzan.IgG@result$NES,  " - padj:  ",
+             All.macrophages.Uzzan.IgG@result$p.adjust))
+
+enrichplot::gseaplot2(All.macrophages.Uzzan.IgG, geneSetID = 1, pvalue_table = TRUE, color = "#86B875", base_size = 14)
+
+p <- enrichplot::gseaplot2(All.macrophages.Uzzan.IgG, geneSetID = 1, pvalue_table = TRUE, color = "#86B875", base_size = 12)
+
+png("Figures/GSEA_Macrophages_IgG.png", 
+    width = 2000, height = 1500, res = 300)
+print(p)  # Important: use print() for ggplot objects
+dev.off()
+
+pdf("Figures/Publication_ready/GSEA_Macrophages_IgG.pdf", 
+    width = 6, height = 4.5)
+print(p)  # Important: use print() for ggplot objects
+dev.off()
+```
+
+
+
+## DESeq2 and GSEA for Fibroblasts
+
+```{r DEseq2 and GSEA fibroblasts}
+all.cells.seurat$Fibroblasts <- ifelse(grepl("Fibroblast", all.cells.seurat$Annotation), "Fibroblasts", 
+                                       "Other")
+
+fibroblasts.pseudo <- AggregateExpression(all.cells.seurat, assays = "RNA", 
+                                        group.by = c("tp", "Fibroblasts"), slot = "counts",
+                                        return.seurat = F)
+
+# Manipulate the matrix to fit DESeq2 input
+matrix.t <- t(fibroblasts.pseudo$RNA)
+count.data.frame <- as.data.frame(matrix.t)
+splitRows <- gsub('.*_', '', rownames(count.data.frame))
+cell.type.list <- split.data.frame(count.data.frame, f = factor(splitRows))
+
+#Retranspose the matrix and fix column names for all elements of the list
+cell.type.list.t <- lapply(cell.type.list, function(x){
+    rownames(x) <- gsub('(.*)_.*', '\\1', rownames(x))
+    t(x)
+})
+
+# Create meta.data for count matrix
+col.data <- data.frame(samples = colnames(cell.type.list.t$`Fibroblasts`))
+
+col.data$treatment <- ifelse(col.data$samples == "T1" | col.data$samples == "T2" |
+                               col.data$samples == "T3", "pre_CART", "post_CART")
+
+# Perform DESeq2 for all Fibroblasts
+count.data.Fibroblasts <- cell.type.list.t$`Fibroblasts`
+class(count.data.Fibroblasts) <- "integer"
+
+
+dds <- DESeqDataSetFromMatrix(countData = count.data.Fibroblasts, 
+                colData =  col.data,
+                design = ~ treatment)
+
+#Remove all genes with fewer than 10 reads 
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq(dds)
+
+resultsNames(dds)
+
+#Generate results object
+res <- results(dds, name = "treatment_pre_CART_vs_post_CART")
+res 
+
+res_df <- as.data.frame(res)
+
+# Sort dataframe for adjusted p value and show top20 results 
+res_df_sort <- res_df[order(res_df$padj),]
+head(res_df_sort, 20)
+
+res_df_sort$sign.log.10.p <-
+  sign(res_df_sort$log2FoldChange)*(-log10(res_df_sort$pvalue))
+res_df_sort <- res_df_sort %>% filter(!is.na(sign.log.10.p))
+res_df_sort <- res_df_sort[order(res_df_sort$sign.log.10.p, decreasing = T),]
+
+ranked_genes <- as.vector(res_df_sort$sign.log.10.p)
+names(ranked_genes) <- rownames(res_df_sort)
+
+#run GSEA
+Fibro.HALLMARK <- GSEA(ranked_genes, TERM2GENE = hallmark, TERM2NAME = h2, seed=TRUE)
+
+head(Fibro.HALLMARK)
+
+print(paste0(Fibro.HALLMARK@result$ID, " - NES:  ", Fibro.HALLMARK@result$NES,  " - padj:  ",
+             Fibro.HALLMARK@result$p.adjust))
+
+Fibro.Hallmark.df <- data.frame(ID = Fibro.HALLMARK@result$ID, 
+                             NES = Fibro.HALLMARK@result$NES, 
+                             padj = Fibro.HALLMARK@result$p.adjust)
+
+write.csv(Fibro.Hallmark.df, file = "GSEA/Fibroblasts_Hallmark.csv")
+
+
+Fibro.Hallmark.df <- Fibro.Hallmark.df[order(Fibro.Hallmark.df$NES),]
+Fibro.Hallmark.df$ID <- factor(Fibro.Hallmark.df$ID, levels = Fibro.Hallmark.df$ID)
+
+ggplot(Fibro.Hallmark.df, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + theme_minimal()
+```
+
+### GO and REACTOME for Fibroblasts
+
+```{r Go and reactome for fibroblasts}
+#run GSEA
+Fibro.GO.BP <- GSEA(ranked_genes, TERM2GENE = GO_BP, TERM2NAME = GO_BP_t2n, seed=TRUE)
+
+Fibro.GO.BP.df <- data.frame(ID = Fibro.GO.BP@result$ID, 
+                             NES = Fibro.GO.BP@result$NES, 
+                             padj = Fibro.GO.BP@result$p.adjust)
+
+write.csv(Fibro.GO.BP.df, file = "GSEA/Fibroblasts_GOBP.csv")
+
+Fibro.GO.BP.df.top10.up <- Fibro.GO.BP.df %>% filter(NES > 0) %>% slice_min(padj, n = 10)
+Fibro.GO.BP.df.top10.dn <- Fibro.GO.BP.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Fibro.GO.BP.df.top20 <- rbind(Fibro.GO.BP.df.top10.up, Fibro.GO.BP.df.top10.dn)
+
+Fibro.GO.BP.df.top20 <- Fibro.GO.BP.df.top20[order(Fibro.GO.BP.df.top20$NES),]
+Fibro.GO.BP.df.top20$ID <- factor(Fibro.GO.BP.df.top20$ID, levels = Fibro.GO.BP.df.top20$ID)
+
+ggplot(Fibro.GO.BP.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() + 
+  scale_fill_gradient() + coord_flip() + labs(title = "GO:BP Top 20 enriched Gene Sets in Fibroblasts") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+
+## GSEA mit REACTOME
+
+#run GSEA
+Fibro.REACTOME <- GSEA(ranked_genes, TERM2GENE = REACTOME, TERM2NAME = REACTOME_t2n, seed=TRUE)
+
+Fibro.REACTOME.df <- data.frame(ID = Fibro.REACTOME@result$ID, 
+                             NES = Fibro.REACTOME@result$NES, 
+                             padj = Fibro.REACTOME@result$p.adjust)
+
+write.csv(Fibro.REACTOME.df, file = "GSEA/Fibroblasts_Reactome.csv")
+
+Fibro.REACTOME.df.top10.up <- Fibro.REACTOME.df %>% filter(NES > 0) %>% slice_min(padj, n = 10) %>%
+  slice_max(NES, n = 10)
+Fibro.REACTOME.df.top10.dn <- Fibro.REACTOME.df %>% filter(NES < 0) %>% slice_min(padj, n = 10)
+Fibro.REACTOME.df.top20 <- rbind(Fibro.REACTOME.df.top10.up, Fibro.REACTOME.df.top10.dn)
+
+Fibro.REACTOME.df.top20 <- Fibro.REACTOME.df.top20[order(Fibro.REACTOME.df.top20$NES),]
+Fibro.REACTOME.df.top20$ID <- factor(Fibro.REACTOME.df.top20$ID, levels = Fibro.REACTOME.df.top20$ID)
+
+ggplot(Fibro.REACTOME.df.top20, aes(x = ID, y = NES, fill = padj)) + geom_col() +
+  scale_fill_gradient() + coord_flip() + theme_minimal() + 
+  labs(title = "REACTOME Top 20 enriched Gene Sets in Fibroblasts") + 
+  theme(axis.text.x = element_text(size = 7), axis.text.y = element_text(size = 7))
+```
+
+
+```{r combined GSEA plot fibroblasts}
+all.GSEA.fibro.noREACT <- rbind(Fibro.Hallmark.df, Fibro.GO.BP.df.top20)
+all.GSEA.fibro.noREACT$DB <- ifelse(grepl("HALLMARK", all.GSEA.fibro.noREACT$ID), "HALLMARK", NA)
+all.GSEA.fibro.noREACT$DB <- ifelse(grepl("GOBP", all.GSEA.fibro.noREACT$ID), "GOBP", all.GSEA.fibro.noREACT$DB)
+all.GSEA.fibro.noREACT$DB <- factor(all.GSEA.fibro.noREACT$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.fibro.noREACT$Status <- ifelse(all.GSEA.fibro.noREACT$NES < 0, "post CART", NA)
+all.GSEA.fibro.noREACT$Status <- ifelse(all.GSEA.fibro.noREACT$NES > 0, "pre CART", all.GSEA.fibro.noREACT$Status)
+
+all.GSEA.fibro.noREACT.preCAR <- all.GSEA.fibro.noREACT %>% filter(Status == "pre CART") %>% group_by(DB) %>% 
+  slice_max(NES, n = 5)
+all.GSEA.fibro.noREACT.postCAR <- all.GSEA.fibro.noREACT %>% filter(Status == "post CART") %>% group_by(DB) %>% 
+  slice_min(NES, n = 5)
+all.GSEA.fibro.noREACT.top5 <- rbind(all.GSEA.fibro.noREACT.preCAR, all.GSEA.fibro.noREACT.postCAR)
+all.GSEA.fibro.noREACT.top5$Status <- factor(all.GSEA.fibro.noREACT.top5$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.fibro.noREACT.top5$ID <- gsub("GOBP", "", all.GSEA.fibro.noREACT.top5$ID)
+all.GSEA.fibro.noREACT.top5$ID <- gsub("HALLMARK", "", all.GSEA.fibro.noREACT.top5$ID)
+all.GSEA.fibro.noREACT.top5$ID <- gsub("_", " ", all.GSEA.fibro.noREACT.top5$ID)
+
+all.GSEA.fibro.noREACT.top5 <- all.GSEA.fibro.noREACT.top5 %>% mutate(log.10.padj = -log10(padj))
+
+ggplot(all.GSEA.fibro.noREACT.top5, aes(x = Status, y = reorder_within(ID, NES, DB))) + 
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") + 
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right", 
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+ggsave("Figures/GSEA_summary_Fibroblasts_noREACTOME.tiff", 
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 7.5, height = 7, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/GSEA_summary_Fibroblasts_noREACTOME.pdf", 
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 7.5, height = 7, units = "in")
+
+### Und jetzt für ausgewählte Gene Sets
+Fibro.GO.BP.select.gs <- c("GOBP_CARBOHYDRATE_CATABOLIC_PROCESS", "GOBP_REGULATION_OF_INTRINSIC_APOPTOTIC_SIGNALING_PATHWAY",
+                         "GOBP_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS", "GOBP_RESPONSE_TO_HYDROGEN_PEROXIDE", 
+                        "GOBP_REGULATION_OF_APOPTOTIC_SIGNALING_PATHWAY", "GOBP_REGULATION_OF_STEM_CELL_DIFFERENTIATION",
+                        "GOBP_SODIUM_ION_IMPORT_ACROSS_PLASMA_MEMBRANE", "GOBP_FACULTATIVE_HETEROCHROMATIN_FORMATION",
+                        "GOBP_FAT_CELL_PROLIFERATION", "GOBP_MICROTUBULE_ANCHORING")
+Fibro.GO.BP.df.select <- Fibro.GO.BP.df %>% filter(ID %in% Fibro.GO.BP.select.gs)
+Fibro.GO.BP.df.select.sort <- Fibro.GO.BP.df.select[order(Fibro.GO.BP.df.select$NES),]
+Fibro.GO.BP.df.select.sort$ID <- factor(Fibro.GO.BP.df.select.sort$ID, levels = Fibro.GO.BP.df.select.sort$ID)
+
+Fibro.Hallmark.df.top5 <- Fibro.Hallmark.df %>% filter(NES > 0) %>% slice_max(NES, n = 5)
+Fibro.Hallmark.df.bottom5 <- Fibro.Hallmark.df %>% filter(NES < 0) %>% slice_min(NES, n = 5)
+Fibro.Hallmark.df.all5 <- rbind(Fibro.Hallmark.df.top5, Fibro.Hallmark.df.bottom5)
+all.GSEA.fibro.selectGS <- rbind(Fibro.Hallmark.df.all5, Fibro.GO.BP.df.select.sort)
+all.GSEA.fibro.selectGS$DB <- ifelse(grepl("HALLMARK", all.GSEA.fibro.selectGS$ID), "HALLMARK", NA)
+all.GSEA.fibro.selectGS$DB <- ifelse(grepl("GOBP", all.GSEA.fibro.selectGS$ID), "GOBP", all.GSEA.fibro.selectGS$DB)
+all.GSEA.fibro.selectGS$DB <- factor(all.GSEA.fibro.selectGS$DB, levels = c("HALLMARK", "GOBP"))
+
+all.GSEA.fibro.selectGS$Status <- ifelse(all.GSEA.fibro.selectGS$NES < 0, "post CART", NA)
+all.GSEA.fibro.selectGS$Status <- ifelse(all.GSEA.fibro.selectGS$NES > 0, "pre CART", all.GSEA.fibro.selectGS$Status)
+all.GSEA.fibro.selectGS$Status <- factor(all.GSEA.fibro.selectGS$Status, levels = c("pre CART", "post CART"))
+
+all.GSEA.fibro.selectGS$ID <- gsub("GOBP", "", all.GSEA.fibro.selectGS$ID)
+all.GSEA.fibro.selectGS$ID <- gsub("HALLMARK", "", all.GSEA.fibro.selectGS$ID)
+all.GSEA.fibro.selectGS$ID <- gsub("_", " ", all.GSEA.fibro.selectGS$ID)
+
+all.GSEA.fibro.selectGS <- all.GSEA.fibro.selectGS %>% mutate(log.10.padj = -log10(padj))
+
+ggplot(all.GSEA.fibro.selectGS, aes(x = Status, y = reorder_within(ID, NES, DB))) +
+  geom_point(aes(color = log.10.padj, size = abs(NES))) + scale_y_reordered() + scale_size(range = c(3,6)) +
+  scale_x_discrete(expand = c(0.5,0.5)) +
+  ggforce::facet_col(~DB, scales = "free_y", space = "free") +
+   scale_color_gradient(low = "darkblue", high = "purple") +
+  labs(color = "-log10\n(adj. P-value)", size = "NES") +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 10),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right",
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1)
+  )
+
+ggsave("Figures/GSEA_summary_Fibroblasts_custom.tiff",
+  plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 7.5, height = 7, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/GSEA_summary_Fibroblasts_custom.pdf",
+  plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 7.5, height = 7, units = "in")
+```
+

@@ -1,0 +1,86 @@
+---
+title: "02_Annotation"
+author: "Julia Hitschfel"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(SingleCellExperiment)
+library(RColorBrewer)
+library(SingleR)
+library(celldex)
+
+options(future.globals.maxSize= 734003200)
+```
+
+For Annotation of cell populations we will use SingleR with the 'main' annotations, as these suffice to identify the top level cell types. Annotation will be tested for the integrated data with resolutions 0.4 and 0.6 to compare which resolution is best to separate all relevant populations. 
+
+
+```{r SingleR for regressed data}
+scobject_int_reg <- readRDS(file = "integrated_seurat_cellcycle_regression_CU1_1year.rds")
+
+DefaultAssay(scobject_int_reg) <- "SCT"
+sce_reg <- as.SingleCellExperiment(scobject_int_reg, assay = "SCT")
+
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+unique(ref.set$label.main)
+head(unique(ref.set$label.fine), n = 20)
+
+pred.cnts.reg <- SingleR::SingleR(test = sce_reg, ref = ref.set, labels = ref.set$label.main)
+
+lbls.keep.reg <- table(pred.cnts.reg$labels)>10
+
+scobject_int_reg$SingleR.labels <- ifelse(lbls.keep.reg[pred.cnts.reg$labels], pred.cnts.reg$labels, 'Other')
+
+DimPlot(scobject_int_reg, reduction = "umap", group.by = 'SingleR.labels', label = T) + NoLegend()
+DimPlot(scobject_int_reg, reduction = "umap", group.by = 'SingleR.labels') + NoLegend()
+
+DimPlot(scobject_int_reg, reduction = "umap", group.by = "SCT_snn_res.0.4")
+DimPlot(scobject_int_reg, reduction = "umap", group.by = "SCT_snn_res.0.6")
+
+Cluster_labels_04_reg <- scobject_int_reg@meta.data %>% group_by(SCT_snn_res.0.4, SingleR.labels) %>% summarise(autom_labels = n()) %>%
+  filter(autom_labels > 10)
+write.csv(Cluster_labels_04_reg, file = "singleR_top_annotations_04.csv")
+
+Cluster_labels_06_reg <- scobject_int_reg@meta.data %>% group_by(SCT_snn_res.0.6, SingleR.labels) %>% summarise(autom_labels = n()) %>%
+  filter(autom_labels > 10)
+write.csv(Cluster_labels_06_reg, file = "singleR_top_annotations_06.csv")
+
+Idents(scobject_int_reg) <- "SCT_snn_res.0.4"
+scobject_int_reg <- RenameIdents(scobject_int_reg, '0' = 'Fibroblasts_1', '1' = 'Epithelial cells_1', '2' = 'CD8+ T cells',
+                                 '3' = 'CD4+ T cells', '4' = 'Fibroblasts_2', '5' = 'Myeloid cells (Macs)', 
+                                 '6' = 'Secretory epithelial cells', '7' = 'Endothelial cells', '8' = 'Mast cells', 
+                                 '9' = 'Epithelial cells (early differentiated)', '10' = 'Epithelial cells_2', '11' = 'B cells', 
+                                 '12' = 'Proliferating epithelial cells', '13' = 'Smooth Muscle cells', '14' = 'CD45+ immune cells', 
+                                 '15' = 'Myeloid cells (DCs)', '16' = 'Neurons', '17' = 'Epithelial_3')
+
+saveRDS(scobject_int_reg, file = "integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+```
+
+```{r Frequencies over time Annotation}
+scobject_int_reg$Annotation <- Idents(scobject_int_reg)
+
+Cluster_over_time <- scobject_int_reg@meta.data %>% group_by(tp, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#24FF24","#FFFF6D") 
+palette1 <- brewer.pal(8, "Set2")  # First palette
+palette2 <- brewer.pal(8, "Dark2")
+
+combined_palette <- c(farbenblind15, palette1, palette2)  # Combine the palettes
+
+ggplot(Cluster_over_time, aes(x = tp, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = combined_palette) + theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+ggsave(file = "cell_types_over_time.png", plot = last_plot())
+```

@@ -1,0 +1,528 @@
+---
+title: "Figures"
+author: "Julia Hitschfel"
+date: "2026-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(clusterProfiler)
+library(tidyverse)
+library(msigdbr)
+library(ggpubr)
+library(rstatix)
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+library(circlize)
+library(ComplexHeatmap)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D")  
+```
+
+## Principal Component Analysis Pseudobulk dataset
+
+```{r PCA}
+all.cells.seurat <- readRDS("integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+all.cells.pseudo <- AggregateExpression(all.cells.seurat, assays = "RNA", 
+                                        group.by = "tp", slot = "counts",
+                                        return.seurat = F)
+
+count.data <- as.matrix(all.cells.pseudo$RNA)
+
+# Create meta.data for count matrix
+all.cells.numbers <- all.cells.seurat@meta.data %>% group_by(tp) %>% summarise(cell.count = n())
+all.cells.numbers$treatment <- ifelse(all.cells.numbers$tp == "T1" | 
+                                    all.cells.numbers$tp == "T2" |
+                               all.cells.numbers$tp == "T3", "pre_CART", "post_CART")
+
+# Make DESeq2 Object
+dds.cells <- DESeqDataSetFromMatrix(countData = count.data, 
+				colData =  all.cells.numbers,
+ 				design = ~ treatment)
+
+
+## Code for PCA
+# Transform counts for data visualization
+rld <- rlog(dds.cells, blind=TRUE)
+
+# Return PCA data as a dataframe
+pca_data_condition <- plotPCA(rld, intgroup=c("treatment"), returnData = TRUE) 
+
+pca_data_condition <- pca_data_condition %>% 
+  mutate(Treatment = gsub("_", " ", treatment))
+
+pca_data_condition$label <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1y")
+
+# Plot the PCA results
+ggplot(pca_data_condition, aes(x = PC1, y = PC2, color = Treatment, label = label)) +
+  geom_point(size = 5) + 
+  geom_text_repel(size = 5, vjust = 2, hjust = 1.3, show.legend = FALSE) +
+  xlim(-175,55) + ylim(-65,50) +
+  coord_fixed(ratio = 2) + 
+  theme_classic() +
+  xlab(paste0("PC1: ", round(attr(pca_data_condition, "percentVar")[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(attr(pca_data_condition, "percentVar")[2] * 100), "% variance")) + 
+  theme(axis.title = element_text(size = 16), axis.text = element_text(size = 14), 
+        legend.title = element_text(size = 16), legend.text = element_text(size = 14))
+
+ggsave("Figures/PCA_Pseudobulk.tiff", plot = last_plot(), 
+       device = "tiff", dpi = 300, width = 7, height = 5, units = "in", compression = "lzw")
+```
+
+## UMAPs 
+
+```{r UMAP plots for publication}
+# all cells 
+#All cells
+more_colors <- c(farbenblind15, brewer.pal(8, "Set2"))
+all.cells.seurat <- RenameIdents(all.cells.seurat, 'Epithelial_3' = 'Epithelial cells_2', 'Fibroblasts_1' = 'Fibroblasts', 
+                                 'Fibroblasts_2' = 'Fibroblasts (Activated)', 'Neurons' = 'Enteric glial cells',
+                                 'Myeloid cells (Macs)' = 'Myeloid cells (Macrophages)', 
+                                 'Myeloid cells (DCs)' = 'B cells',
+                                 'CD45+ immune cells' = 'T cells (Activated)', 'B cells' = 'B cells/Plasma cells', 
+                                 'Epithelial cells (early differentiated)' = 'Mature Enterocytes')
+
+Idents(all.cells.seurat) <- factor(Idents(all.cells.seurat), 
+                            levels = c("B cells/Plasma cells", "B cells", "CD4+ T cells", "CD8+ T cells",  "T cells (Activated)", 
+                                       "Endothelial cells", "Enteric glial cells", "Epithelial cells_1", "Epithelial cells_2", 
+                                       "Mature Enterocytes", "Secretory epithelial cells",  
+                                       "Fibroblasts", "Fibroblasts (Activated)", 
+                                       "Mast cells", "Myeloid cells (Macrophages)",
+                                       "Smooth Muscle cells",  "Proliferating epithelial cells"))
+
+DimPlot(all.cells.seurat, reduction = "umap", cols = more_colors, label = T, repel = T, 
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-18,18) + ylim(-15,12) +
+  coord_fixed(ratio = 1.26) + 
+  guides(color = guide_legend(override.aes = list(size=12), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14)) 
+
+ggsave(filename = "Figures/All_cells_umap_labeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 11, height = 12,
+       units = "in", compression = "lzw")
+
+DimPlot(all.cells.seurat, reduction = "umap", cols = more_colors, label = F) + xlim(-18,18) + ylim(-15,12) +
+  coord_fixed(ratio = 1.26) +
+  NoLegend()
+
+ggsave(filename = "Figures/All_cells_umap_unlabeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 11, height = 12,
+       units = "in", compression = "lzw")
+
+DimPlot(all.cells.seurat, reduction = "umap", cols = more_colors, label = F) + xlim(-18,18) + ylim(-15,12) +
+  coord_fixed(ratio = 1.26) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/All_cells_umap_legend.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 11, height = 12,
+       units = "in", compression = "lzw")
+
+ggsave(filename = "Figures/Publication_ready/All_cells_umap_legend.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 11, height = 12,
+       units = "in")
+
+ggsave(filename = "Figures/Publication_ready/All_cells_umap_legend_test.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 10, height = 7.5,
+       units = "in")
+
+# T cells 
+
+Tcells <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcells <- RenameIdents(Tcells, 'Activated T cells?' = 'Activated T cells', 'TCM' = 'Naive/TCM', 'Treg' = 'CCR6+ Treg', 
+                       'IKZF2+ Treg' = 'Effector Treg', 'TPH?' = 'Tph-like', 'Th17' = 'Th17-like CD4', 
+                       'Proliferating T' = 'Proliferating cells', 'Undefined' = 'Memory CD8') 
+                                 
+Idents(Tcells) <- factor(Idents(Tcells), 
+                            levels = c("CD8+ TRM", "CD8+ GzmK+", "Naive/TCM", "Tph-like", "Th17-like CD4", "CCR6+ Treg", 
+                                       "Effector Treg", "Activated T cells", "NK/NKT cells", "Memory CD8",
+                                       "Proliferating cells"))
+
+DimPlot(Tcells, reduction = "umap", cols = farbenblind15, label = T, repel = T, pt.size = 1.25,
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-8,9) + ylim(-5.5,6.5) +
+  scale_y_continuous(breaks = seq(-10,10, by = 5), limits = c(-6.5,6.5)) +
+  coord_fixed(ratio = 1.42) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Tcell_subcluster_umap_labeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Tcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25) + 
+  xlim(-8,9) + ylim(-5.5,6.5) +
+  scale_y_continuous(breaks = seq(-10,10, by = 5), limits = c(-6.5,6.5)) +
+  coord_fixed(ratio = 1.42) +
+  NoLegend()
+
+ggsave(filename = "Figures/Tcell_subcluster_umap_unlabeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Tcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25) + 
+  xlim(-8,9) + ylim(-5.5,6.5) + scale_y_continuous(breaks = seq(-10,10, by = 5), limits = c(-6.5,6.5)) +
+  coord_fixed(ratio = 1.42) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Tcell_subcluster_umap_legend.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+ggsave(filename = "Figures/Publication_ready/Tcell_subcluster_umap_legend.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 10, height = 7,
+       units = "in")
+
+# B cells
+Bcells <- readRDS(file = "Bcell_subclustering_BCRs_integrated_annotated.rds")
+
+Bcells <- RenameIdents(Bcells, 'Plasmacells_1' = 'PC_1', 'Plasmacells_2' = 'PC_2', 'Plasmacells_3' = 'PC_3/PB', 
+                       'Plasmacells_4' = 'PC_4', 'GC-like B cells' = 'GC B cells')
+
+Idents(Bcells) <- factor(Idents(Bcells), 
+                            levels = c("Naive B cells", "PC_1", "PC_2", "PC_3/PB", "PC_4", "Proliferating", "GC B cells"))
+
+DimPlot(Bcells, reduction = "umap", cols = farbenblind15, label = T, repel = T, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-5.5,15) + 
+  scale_y_continuous(breaks = seq(-15,10, by = 5), limits = c(-15,9)) + coord_fixed(ratio = 0.85) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Bcell_subcluster_umap_labeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Bcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-5.5,15) + 
+  scale_y_continuous(breaks = seq(-15,10, by = 5), limits = c(-15,9)) + coord_fixed(ratio = 0.85) + NoLegend()
+
+ggsave(filename = "Figures/Bcell_subcluster_umap_unlabeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Bcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-5.5,15) + 
+  scale_y_continuous(breaks = seq(-15,10, by = 5), limits = c(-15,9)) + coord_fixed(ratio = 0.85) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Bcell_subcluster_umap_legend.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+ggsave(filename = "Figures/Publication_ready/Bcell_subcluster_umap_legend.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 10, height = 7,
+       units = "in")
+
+# Epithelial cells
+Epithelialcells <- readRDS(file = "Epithelial_Cells_annotated.rds")
+
+Epithelialcells <- RenameIdents(Epithelialcells, 'Stress-response epithelial cells' = 'OLFM4+ epithelial progenitors',
+                                'Cycling Transit Amplifying 1' = 'Transit Amplifying 1', 
+                                'Enterocytes (early differentiated)' = 'Mature Enterocytes 2', 
+                                'Mature Enterocytes' = 'Mature Enterocytes 1')
+
+Idents(Epithelialcells) <- factor(Idents(Epithelialcells), 
+                            levels = c("Goblet Cells", "Immature Goblet Cells", "Mature Enterocytes 1", "Mature Enterocytes 2", 
+                                       "Transit Amplifying 1", "Transit Amplifying 2",  
+                                       "OLFM4+ epithelial progenitors", "Intestinal Stem Cells", 
+                                       "Injury-response epithelial cells", "EMT-like secretory Epithelial",
+                                       "Enteroendocrine", "Paneth-like Cells", "BEST4+ Enterocytes"))
+                              
+DimPlot(Epithelialcells, reduction = "umap", cols = farbenblind15, label = T, repel = T, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + xlim(-10, 10) + ylim(-7,9) + coord_fixed(ratio = 1.25) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/ECs_subcluster_umap_labeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Epithelialcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25) + 
+  xlim(-10, 10) + ylim(-7,9) + coord_fixed(ratio = 1.25) +
+  NoLegend()
+
+ggsave(filename = "Figures/ECs_subcluster_umap_unlabeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Epithelialcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25) + 
+  xlim(-10, 10) + ylim(-7,9) + coord_fixed(ratio = 1.25) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/ECs_subcluster_umap_legend.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+ggsave(filename = "Figures/Publication_ready/ECs_subcluster_umap_legend.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 10, height = 7,
+       units = "in")
+
+# Myeloid cells
+Myeloidcells <- readRDS(file = "Myeloid_Cells_annotated.rds")
+
+Myeloidcells <- RenameIdents(Myeloidcells, 'M1 Macrophages' = 'TREM2-like Macrophages', 'M2 Macrophages' = 'M2 tissue-resident', 
+                             'pDCs?' = 'Macrophages (undefined)', 'Epithelial?' = 'M1 Macrophages')
+
+Idents(Myeloidcells) <- factor(Idents(Myeloidcells), 
+                            levels = c("Inflammatory monocyte-derived Macrophages", "M1 Macrophages", 
+                                       "M2 tissue-resident", "TREM2-like Macrophages", "Macrophages (undefined)", 
+                                       "cDC1", "cDC2", "Neutrophils"))
+
+DimPlot(Myeloidcells, reduction = "umap", cols = farbenblind15, label = T, repel = T, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + 
+  scale_x_continuous(limits = c(-7.5, 7.5), breaks = seq(-5,5, by = 5)) +
+  scale_y_continuous(limits = c(-5.5,5.5), breaks = seq(-5,5, by = 5)) +
+  coord_fixed(ratio = 1.36) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Myeloid_subcluster_umap_labeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Myeloidcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + 
+  scale_x_continuous(limits = c(-7.5, 7.5), breaks = seq(-5,5, by = 5)) +
+  scale_y_continuous(limits = c(-5.5,5.5), breaks = seq(-5,5, by = 5)) +
+  coord_fixed(ratio = 1.36) + NoLegend()
+
+ggsave(filename = "Figures/Myeloid_subcluster_umap_unlabeled.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+DimPlot(Myeloidcells, reduction = "umap", cols = farbenblind15, label = F, pt.size = 1.25, 
+        label.color = "darkgoldenrod2", label.box = T) + 
+  scale_x_continuous(limits = c(-7.5, 7.5), breaks = seq(-5,5, by = 5)) +
+  scale_y_continuous(limits = c(-5.5,5.5), breaks = seq(-5,5, by = 5)) +
+  coord_fixed(ratio = 1.36) +
+  guides(color = guide_legend(override.aes = list(size=8), byrow = T)) + 
+  theme(legend.key.height = unit(30, "pt"), legend.key.width = unit(30, "pt"), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16)) 
+
+ggsave(filename = "Figures/Myeloid_subcluster_umap_legend.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+ggsave(filename = "Figures/Publication_ready/Myeloid_subcluster_umap_legend.pdf",
+       plot = ggplot2::last_plot(), device = "pdf", dpi = 300, width = 10, height = 7,
+       units = "in")
+```
+
+## Isotype Heatmap B cells 
+
+```{r Isotype Heatmap B cells}
+Bcells <- ScaleData(Bcells, features = c("IGHG1", "IGHG2", "IGHG3", "IGHA1", "IGHA2", "IGHM"))
+
+Bcell.isotype.GEX <- GetAssayData(Bcells, assay = "RNA", layer = "scale.data")
+Bcell.isotype.GEX <- Bcell.isotype.GEX[c("IGHG1", "IGHG2", "IGHG3", "IGHA1", "IGHA2", "IGHM"),]
+Bcell.isotype.GEX <- as.data.frame(t(Bcell.isotype.GEX))
+Bcell.isotype.GEX$barcodes <- rownames(Bcell.isotype.GEX)
+Bcell.idents <- as.data.frame(Idents(Bcells))
+Bcell.idents$barcodes <- rownames(Bcell.idents)
+Bcell.isotype.GEX <- merge(Bcell.isotype.GEX, Bcell.idents, by = "barcodes")
+Bcell.isotype.GEX.mat <- as.matrix(Bcell.isotype.GEX[,c(2:7)])
+Heatmap.cols <- colorRamp2(c(-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5), viridis(n = 12))
+Isotypes <- Heatmap(Bcell.isotype.GEX.mat, name = "Gene expression \n(scaled z-score per gene)", col = Heatmap.cols, 
+        row_split = Bcell.isotype.GEX$`Idents(Bcells)`, 
+        cluster_columns = F, column_title = "Immunoglobulin Isotypes", show_row_dend = F, 
+        row_title_rot = 0)
+
+Isotypes
+
+# Save the heatmap as a PNG file
+png("Figures/heatmap_Ig-isotypes.png", 
+    width = 800, height = 600, res = 120)
+draw(Isotypes)
+dev.off()
+
+## B cell isotypes flip 
+Bcell.isotype.GEX.t <- t(Bcell.isotype.GEX.mat)
+Bcell.clusters <- factor(Bcell.isotype.GEX$`Idents(Bcells)`)
+
+Isotypes.t <- Heatmap(Bcell.isotype.GEX.t, name = "Gene expression \n(scaled z-score per gene)", col = Heatmap.cols, 
+        column_split = Bcell.clusters,
+        cluster_column_slices = F, show_column_dend = F, show_column_names = FALSE, 
+        show_row_dend = F, 
+        row_title_rot = 0, column_title_gp = gpar(fontsize = 12), column_title_rot = 90)
+draw(Isotypes.t)
+
+png("Figures/heatmap_Ig-isotypes_rotated_single_cluster.png", 
+    width = 800, height = 600, res = 120)
+draw(Isotypes.t)
+dev.off()
+```
+```{r Heatmap with grouping}
+# Grouping labels
+ha = HeatmapAnnotation(empty = anno_empty(border = FALSE))
+
+Isotypes.t.group <- Heatmap(Bcell.isotype.GEX.t, name = "Gene expression \n(scaled z-score per gene)", 
+                            col = Heatmap.cols, 
+        column_split = Bcell.clusters, 
+        cluster_column_slices = F, show_column_dend = F, show_column_names = FALSE, 
+        show_row_dend = F, 
+        row_title_rot = 0, column_title_gp = gpar(fontsize = 12), column_title_rot = 90, 
+        top_annotation = ha)
+
+png("Figures/heatmap_Ig-isotypes_rotated_grouped_cluster.png", 
+    width = 800, height = 600, res = 120)
+draw(Isotypes.t.group)
+
+seekViewport("annotation_empty_1")
+loc1 = deviceLoc(x = unit(0, "npc"), y = unit(0, "npc"))
+seekViewport("annotation_empty_4")
+loc2 = deviceLoc(x = unit(1, "npc"), y = unit(1, "npc"))
+loc2
+
+seekViewport("global")
+grid.rect(loc1$x, loc1$y, width = loc2$x - loc1$x, height = loc2$y - loc1$y, 
+    just = c("left", "bottom"), gp = gpar(fill = "#009292"))
+grid.text("Plasmacells", x = (loc1$x + loc2$x)*0.5, y = (loc1$y + loc2$y)*0.5, gp = gpar(fontsize=10))
+
+
+seekViewport("annotation_empty_5")
+loc3 = deviceLoc(x = unit(0, "npc"), y = unit(0, "npc"))
+seekViewport("annotation_empty_6")
+loc4 = deviceLoc(x = unit(1, "npc"), y = unit(1, "npc"))
+loc4
+
+seekViewport("global")
+grid.rect(loc3$x, loc3$y, width = loc4$x - loc3$x, height = loc4$y - loc3$y, 
+    just = c("left", "bottom"), gp = gpar(fill = "#006DDB"))
+grid.text("GC/Prolif", x = (loc3$x + loc4$x)*0.5, y = (loc3$y + loc4$y)*0.5, gp = gpar(fontsize=10))
+
+seekViewport("annotation_empty_7")
+loc5 = deviceLoc(x = unit(0, "npc"), y = unit(0, "npc"))
+seekViewport("annotation_empty_7")
+loc6 = deviceLoc(x = unit(1, "npc"), y = unit(1, "npc"))
+
+seekViewport("global")
+grid.rect(loc5$x, loc5$y, width = loc6$x - loc5$x, height = loc6$y - loc5$y, 
+    just = c("left", "bottom"), gp = gpar(fill = "#000000"))
+
+
+dev.off()
+```
+
+## B cell receptor Isotypes over time VDJ Library
+
+```{r BCR over time}
+Bcell.isotypes.VDJ <- Bcells@meta.data
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHG1_", Bcell.isotypes.VDJ$CTgene) == T, "IGHG1", NA)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHG2_", Bcell.isotypes.VDJ$CTgene) == T, "IGHG2", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHG3_", Bcell.isotypes.VDJ$CTgene) == T, "IGHG3", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHG4_", Bcell.isotypes.VDJ$CTgene) == T, "IGHG4", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHA1_", Bcell.isotypes.VDJ$CTgene) == T, "IGHA1", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHA2_", Bcell.isotypes.VDJ$CTgene) == T, "IGHA2", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHM_", Bcell.isotypes.VDJ$CTgene) == T, "IGHM", 
+                                     Bcell.isotypes.VDJ$Isotype)
+Bcell.isotypes.VDJ$Isotype <- ifelse(grepl("IGHD_", Bcell.isotypes.VDJ$CTgene) == T, "IGHD", 
+                                     Bcell.isotypes.VDJ$Isotype)
+
+Bcell.isotypes.VDJ <- Bcell.isotypes.VDJ %>% filter(!is.na(Isotype))
+Bcell.isotypes.freq.tp <- Bcell.isotypes.VDJ %>% group_by(tp, Isotype) %>% 
+  summarise(Count.Isotype = n()) %>% mutate(Freq.Isotype = Count.Isotype/sum(Count.Isotype)*100)
+
+write.csv(Bcell.isotypes.freq.tp, "Bcell_isotype_frequencies.csv")
+
+ggplot(Bcell.isotypes.freq.tp, aes (x = tp, y = Freq.Isotype, fill = Isotype)) + 
+  geom_col(position = "stack") + scale_fill_manual(values = farbenblind15) + 
+  xlab(label = "Timepoint") + 
+  ylab(label = "% of isotype in BCR repertoire") + theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+                          aspect.ratio = 1)
+
+ggsave(filename = "Figures/BCR_isotypes_VDJ_date_labels.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+
+Axis.labels <- c("pre Blina", "2 mo post Blina", "5 mo post Blina", "1 wk post CART", 
+                 "1 mo post CART", "5 mo post CART", "8 mo post CART", "10 mo post CART", "1 y post CART")
+
+ggplot(Bcell.isotypes.freq.tp, aes (x = tp, y = Freq.Isotype, fill = Isotype)) + 
+  geom_col(position = "stack") + scale_fill_manual(values = farbenblind15) + 
+  scale_x_discrete(labels = Axis.labels) + xlab(label = "Treatment") + 
+  ylab(label = "% of isotype in BCR repertoire") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+                          aspect.ratio = 1)
+
+ggsave(filename = "Figures/BCR_isotypes_VDJ_treatment_labels.tiff",
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 10, height = 7,
+       units = "in", compression = "lzw")
+```
+
+## Markers associated with Colitis in B cells 
+
+```{r B cell markers colitis}
+#CXCR3
+VlnPlot(Bcells, features = "CXCR3", cols = farbenblind15)
+
+ggsave("Figures/Bcells_CXCR3_clusters.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+VlnPlot(Bcells, features = "CXCR3", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Bcells_CXCR3_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+#ITGB1
+VlnPlot(Bcells, features = "ITGB1", cols = farbenblind15)
+
+ggsave("Figures/Bcells_ITGB1_clusters.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+VlnPlot(Bcells, features = "ITGB1", cols = farbenblind15, group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Bcells_ITGB1_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+
+#ITGB7
+VlnPlot(Bcells, features = "ITGB7", cols = farbenblind15)
+
+ggsave("Figures/Bcells_ITGB7_clusters.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Bcells_ITGB7_clusters.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 8, height = 6, units = "in")
+
+VlnPlot(Bcells, features = "ITGB7", cols = farbenblind15, group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Bcells_ITGB7_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+```

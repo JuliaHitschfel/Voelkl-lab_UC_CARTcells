@@ -1,0 +1,236 @@
+---
+title: "08_Epithelial_Cell_Annotation"
+author: "Julia Hitschfel"
+date: "2026-05-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(SingleCellExperiment)
+library(dplyr)
+library(ggplot2)
+library(BPCells)
+library(presto)
+library(glmGamPoi)
+library(hdf5r)
+library(knitr)
+library(pheatmap)
+library(RColorBrewer)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+```
+
+## Violin Plots for marker genes of epithelial cell subpopulations 
+
+
+```{r Import Data}
+scEpithelial <- readRDS(file = "Epithelial_Cells.rds")
+
+Idents(scEpithelial) <- scEpithelial@meta.data$SCT_snn_res.0.4
+
+scEpithelial <- PrepSCTFindMarkers(scEpithelial)
+
+Cluster_marker_04 <- FindAllMarkers(scEpithelial, logfc.threshold = 0.25, min.pct = 0.25, 
+                                    only.pos = T)
+
+write.csv(Cluster_marker_04, file = "Markergenes_Subpopulations/Epithelial_cells_res04.csv")
+```
+
+### Intestinal stem cells 
+
+```{r Intestinal stem cells}
+VlnPlot(scEpithelial, features = "LGR5")
+
+VlnPlot(scEpithelial, features = "ASCL2")
+
+VlnPlot(scEpithelial, features = "VDR")
+
+VlnPlot(scEpithelial, features = "OLFM4")
+
+VlnPlot(scEpithelial, features = "SMOC2")
+
+VlnPlot(scEpithelial, features = "SOX9")
+```
+Cluster 3 shows slightly elevated expression of intestinal stem cell marker genes LGR5 and ASCL2 and an increased expression of OLFM4, which supports an early differentiation stage. 
+
+### Goblet Cell marker genes 
+
+```{r Goblet cell marker}
+VlnPlot(scEpithelial, features = "TFF3")
+
+VlnPlot(scEpithelial, features = "ITLN1")
+
+VlnPlot(scEpithelial, features = "SPINK4")
+
+```
+
+Cluster 0 shows the highest expression of TFF3 and thus is likely a fully differentiated goblet cell population. In addition, cluster 7 and 9 show increased expression of TFF3 and could be goblet cells or precursors thereof.  
+
+
+### INFLARE marker genes from PanGI Paper
+
+```{r INFLAREs}
+VlnPlot(scEpithelial, features = "MUC6")
+
+VlnPlot(scEpithelial, features = "MUC5AC")
+
+VlnPlot(scEpithelial, features = "BPIFB1")
+
+VlnPlot(scEpithelial, features = "PGC")
+
+VlnPlot(scEpithelial, features = "AQP5")
+
+```
+
+Cluster 3 contains cells that were described to be associated with IBD in the PanGI atlas paper of Sarah Teichmann's group.The paper also described these cells as having a stem cell phenotype, which would be fitting with the potential stem cell identity of this cluster. 
+
+### Absorptive epithelial cell marker genes 
+
+```{r Absorptive}
+VlnPlot(scEpithelial, features = "FABP1")
+
+VlnPlot(scEpithelial, features = "CDHR5")
+
+VlnPlot(scEpithelial, features = "PHGR1")
+
+VlnPlot(scEpithelial, features = "ANPEP")
+
+VlnPlot(scEpithelial, features = "IL32")
+```
+
+Cluster 2 shows an increased expression of marker genes that are associated with fully differentiated absorptive enterocytes/colonocytes. Cluster 5 shows moderate expression of these markers and perhaps thus represents an earlier differentiation state. 
+
+### Transit Amplifying Cells
+
+```{r Transit Amplifying}
+VlnPlot(scEpithelial, features = "MKI67")
+
+VlnPlot(scEpithelial, features = "STMN1")
+
+VlnPlot(scEpithelial, features = "PCLAF")
+
+VlnPlot(scEpithelial, features = "PTTG1")
+
+VlnPlot(scEpithelial, features = "RARRES2")
+
+VlnPlot(scEpithelial, features = "MYB")
+
+VlnPlot(scEpithelial, features = "AQP1")
+
+```
+
+There seem to be three clusters of cycling epithelial cells. Cluster 6-8 all show expression of proliferation markers that are associated with Transit Amplifying Cells. Since cluster 7 also expresses some markers of secretory epithelial cells/Goblet cells, perhaps these are proliferating cells on a differentiation trajectory towards goblet cells. 
+
+### Enteroendocrine
+
+```{r Enteroendocrine}
+VlnPlot(scEpithelial, features = "CHGA")
+
+VlnPlot(scEpithelial, features = "PCSK1N")
+
+VlnPlot(scEpithelial, features = "SCGN")
+
+```
+
+Cluster 10 represent a cluster of enteroendocrine cells. 
+
+### Epithelial cell progenitor cells 
+
+```{r Epithelial progenitor}
+VlnPlot(scEpithelial, features = "APOE")
+
+VlnPlot(scEpithelial, features = "APOA1")
+
+VlnPlot(scEpithelial, features = "GPC3")
+```
+
+No population clearly expresses marker genes of progenitor cells. 
+
+```{r Unidentified Clusters}
+VlnPlot(scEpithelial, features = "KRT8")
+
+VlnPlot(scEpithelial, features = "NME2")
+
+VlnPlot(scEpithelial, features = "PIEZO1")
+
+VlnPlot(scEpithelial, features = "S100A10")
+
+VlnPlot(scEpithelial, features = "HES6")
+
+# Cluster 8
+VlnPlot(scEpithelial, features = "CCNB1")
+
+VlnPlot(scEpithelial, features = "CDC20")
+
+VlnPlot(scEpithelial, features = "CENPF")
+
+# Cluster 9
+VlnPlot(scEpithelial, features = "NRG1")
+
+VlnPlot(scEpithelial, features = "CXCL14")
+
+VlnPlot(scEpithelial, features = "COL1A2")
+
+# Cluster 11
+VlnPlot(scEpithelial, features = "PRSS2")
+
+VlnPlot(scEpithelial, features = "DEFA5")
+
+VlnPlot(scEpithelial, features = "PLA2G2A")
+
+# Cluster 12 
+VlnPlot(scEpithelial, features = "SPIB")
+
+VlnPlot(scEpithelial, features = "BEST4")
+
+VlnPlot(scEpithelial, features = "PROX1")
+
+```
+
+Preliminary Annotation: 
+
+```{r Annotation}
+Cluster_over_time_04 <- scEpithelial@meta.data %>% group_by(tp, SCT_snn_res.0.4) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_04, aes(x = tp, y = Freq, fill = SCT_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+scEpithelial <- RenameIdents(scEpithelial, '0' = 'Goblet Cells', '1' = 'Stress-response epithelial cells', '2' = 'Mature Enterocytes', 
+                             '3' = 'Intestinal Stem Cells', '4' = 'Injury-response epithelial cells', 
+                             '5' = 'Enterocytes (early differentiated)',
+                             '6' = 'Cycling Transit Amplifying 1', '7' = 'Immature Goblet Cells', '8' = 'Transit Amplifying 2', 
+                             '9' = 'EMT-like secretory Epithelial', '10' = 'Enteroendocrine', '11' = 'Paneth-like Cells', 
+                             '12' = 'BEST4+ Enterocytes')
+
+scEpithelial$Annotation <- Idents(scEpithelial)
+
+Cluster_over_time_04_ann <- scEpithelial@meta.data %>% group_by(tp, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_04_ann, aes(x = tp, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+write.csv(Cluster_over_time_04_ann, 
+          file = "Epithelial_Cell_subsets_in_epithelial.csv")
+
+saveRDS(scEpithelial, file = "Epithelial_Cells_annotated.rds")
+
+```
+```{r Frequencies Epithelial in all cells}
+All_cells_scobject <- readRDS(file = "integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+All_cells_TP <- All_cells_scobject@meta.data %>% group_by(tp) %>% summarise(All.n = n())
+All_cells_TP
+
+# Frequencies in All Cells
+EpithelialCluster_All <- merge(Cluster_over_time_04_ann, All_cells_TP, by = "tp")
+EpithelialCluster_All_Freq <- EpithelialCluster_All %>% mutate(Freq.All = (n/All.n)*100)
+write.csv(EpithelialCluster_All_Freq, "Epithelial_cells_in_Total.csv")
+```

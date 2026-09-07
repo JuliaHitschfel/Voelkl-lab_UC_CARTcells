@@ -1,0 +1,126 @@
+---
+title: "10_Bcell_Annotation"
+author: "Julia Hitschfel"
+date: "2026-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(SingleCellExperiment)
+library(SingleR)
+library(celldex)
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D")
+```
+
+## SingleR Annotation for B cells
+
+```{r Import dataset and ref set}
+Bcell_scobject_integrated <- readRDS(file = "Bcell_subclustering_BCRs_integrated.rds")
+
+DefaultAssay(Bcell_scobject_integrated) <- "RNA"
+sce <- as.SingleCellExperiment(Bcell_scobject_integrated, assay = "RNA")
+sce
+
+ls('package:celldex')
+ref.set <- celldex::HumanPrimaryCellAtlasData()
+unique(ref.set$label.main)
+head(unique(ref.set$label.fine))
+```
+
+```{r Run prediction}
+pred.cnts <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.main)
+
+lbls.keep <- table(pred.cnts$labels)>10
+Bcell_scobject_integrated$SingleR.labels <- ifelse(lbls.keep[pred.cnts$labels], pred.cnts$labels, 'Other')
+
+DimPlot(Bcell_scobject_integrated, reduction='umap', group.by='SingleR.labels', label = T) + NoLegend()
+DimPlot(Bcell_scobject_integrated, reduction='umap', group.by='integrated_snn_res.0.6')
+DimPlot(Bcell_scobject_integrated, reduction='umap', group.by='integrated_snn_res.0.4')
+DimPlot(Bcell_scobject_integrated, reduction='umap', group.by='integrated_snn_res.0.2')
+
+Cluster_labels_04 <- Bcell_scobject_integrated@meta.data %>% group_by(integrated_snn_res.0.4, SingleR.labels) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+
+```
+
+The main labels of singleR are not sensitive enough to annotate the B cell subtypes. However, on a positive note, most cells in the dataset are now annotated as B cells or pro B cells, indicating that the subclustering mostly contains the desired cell type. 
+
+```{r Run prediction label fine}
+pred.cnts.fine <- SingleR::SingleR(test = sce, ref = ref.set, labels = ref.set$label.fine)
+lbls.keep.fine <- table(pred.cnts.fine$labels)>10
+Bcell_scobject_integrated$SingleR.labels.fine <- ifelse(lbls.keep.fine[pred.cnts.fine$labels], 
+                                       pred.cnts.fine$labels, 'Other')
+
+DimPlot(Bcell_scobject_integrated, reduction='umap', group.by='SingleR.labels.fine')
+
+Cluster_labels_fine_0.6 <- Bcell_scobject_integrated@meta.data %>% group_by(integrated_snn_res.0.6, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+
+Cluster_labels_fine_0.4 <- Bcell_scobject_integrated@meta.data %>% group_by(integrated_snn_res.0.4, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+
+Cluster_labels_fine_0.2 <- Bcell_scobject_integrated@meta.data %>% group_by(integrated_snn_res.0.2, SingleR.labels.fine) %>%
+  summarise(autom_labels = n()) %>% filter(autom_labels > 10)
+```
+
+```{r Annotation}
+
+Bcell_scobject_integrated <- RenameIdents(Bcell_scobject_integrated, '0' = 'Plasmacells_1', '1' = 'Plasmacells_2', 
+                                          '2' = 'Plasmacells_3', '3' = 'Proliferating', '4' = 'Plasmacells_4', '5' = 'GC-like B cells', 
+                                          '6' = 'Naive B cells')
+
+Bcell_scobject_integrated$Annotation <- Idents(Bcell_scobject_integrated) 
+
+Cluster_over_time_int <- Bcell_scobject_integrated@meta.data %>% group_by(tp, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_int, aes(x = tp, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15) +
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45))
+
+saveRDS(Bcell_scobject_integrated, file = "Bcell_subclustering_BCRs_integrated_annotated.rds")
+```
+
+```{r Cell Cycle Scoring}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+Bcell_scobject_integrated <- CellCycleScoring(Bcell_scobject_integrated,
+                                                 s.features = s.genes,
+                                                  g2m.features = g2m.genes)
+
+ggplot(Bcell_scobject_integrated@meta.data, aes(x = Annotation, y = S.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45))
+
+ggplot(Bcell_scobject_integrated@meta.data, aes(x = Annotation, y = G2M.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45))
+```
+
+
+```{r GC marker}
+VlnPlot(Bcell_scobject_integrated, features = "BCL6")
+VlnPlot(Bcell_scobject_integrated, features = "AICDA")
+VlnPlot(Bcell_scobject_integrated, features = "CD83")
+VlnPlot(Bcell_scobject_integrated, features = "CD38")
+VlnPlot(Bcell_scobject_integrated, features = "MEF2B")
+
+# Dark zone marker
+VlnPlot(Bcell_scobject_integrated, features = "CXCR4")
+VlnPlot(Bcell_scobject_integrated, features = "MKI67")
+VlnPlot(Bcell_scobject_integrated, features = "HMGB2")
+VlnPlot(Bcell_scobject_integrated, features = "EZH2")
+VlnPlot(Bcell_scobject_integrated, features = "FOXM1")
+VlnPlot(Bcell_scobject_integrated, features = "MCM10")
+VlnPlot(Bcell_scobject_integrated, features = "AURKB")
+
+```

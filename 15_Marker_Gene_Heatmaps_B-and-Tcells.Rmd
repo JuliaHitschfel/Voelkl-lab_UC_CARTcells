@@ -1,0 +1,170 @@
+---
+title: "Effector Gene Heatmaps"
+author: "Julia Hitschfel"
+date: "2026-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+```
+
+## Effector and Marker Genes T cells 
+
+```{r Heatmap T cell effectors}
+Tcell_scobject <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcell_scobject <- RenameIdents(Tcell_scobject, 'Activated T cells?' = 'Activated T cells', 'TCM' = 'Naive/TCM', 'Treg' = 'CCR6+ Treg', 
+                       'IKZF2+ Treg' = 'Effector Treg', 'TPH?' = 'Tph-like', 'Th17' = 'Th17-like CD4', 
+                       'Proliferating T' = 'Proliferating cells', 'Undefined' = 'Memory CD8') 
+                                 
+Idents(Tcell_scobject) <- factor(Idents(Tcell_scobject), 
+                            levels = c("CD8+ TRM", "CD8+ GzmK+", "Naive/TCM", "Tph-like", "Th17-like CD4", "CCR6+ Treg", 
+                                       "Effector Treg", "Activated T cells", "NK/NKT cells", "Memory CD8",
+                                       "Proliferating cells"))
+
+Effector_list <- c("IL1A", "IL1B","IL2", "IL5", "IL6", "IL7", "CXCL8", "IL10", "IL12A", "TXLNA",
+                   "IL15", "IL16", "IL17A", "IL18", "IL19", "IL21", "IL22", "IL26", "EBI3", "IL32",
+                   "IL33", "GZMB", "PRF1", "GNLY", "GZMA", "GZMK", "TGFB1", "IFNG", "CXCL10",
+                   "CXCL13", "CCL4", "CCL5", "TNF", "LTA", "XCL1", "XCL2")
+
+DefaultAssay(Tcell_scobject) <- "RNA"
+Tcell_scobject <- NormalizeData(Tcell_scobject)
+
+Tcell_scobject <- ScaleData(Tcell_scobject, features = rownames(Tcell_scobject))
+
+DoHeatmap(Tcell_scobject, features = unique(Effector_list), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+pseudo_Tcells <- AggregateExpression(Tcell_scobject, assays = "RNA", return.seurat = T, 
+                                     group.by = "ident")
+
+DoHeatmap(pseudo_Tcells, features = unique(Effector_list), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+Effector_gene_rows <- which(rownames(pseudo_Tcells@assays$RNA$scale.data) %in% Effector_list)
+Effector_genes <- pseudo_Tcells@assays$RNA$scale.data[Effector_gene_rows,]
+
+png("Figures/Tcell_cytokines.png", width = 700, 
+    height = 1000, res = 150)
+pheatmap(Effector_genes, main = "Gene expression \n(scaled z-score per gene)", angle_col = c("45"), cluster_cols = F)
+
+dev.off()
+
+png("Figures/Tcell_cytokines_viridis.png",
+    width = 700, height = 1000, res = 150)
+pheatmap(Effector_genes, color = viridis(100), angle_col = c("45"), cluster_cols = F)
+dev.off()
+
+png("Figures/Tcell_cytokines_viridis_no-tree.png",
+    width = 800, height = 1000, res = 150)
+pheatmap(Effector_genes, color = viridis(100), angle_col = c("45"), cluster_cols = F, treeheight_row = 0, cellwidth = 17, cellheight = 10)
+dev.off()
+
+Marker_genes <- c("ITGAE", "CD69", "FOXP3", "BATF", "CTLA4", "KLF2", "BACH2", "IL7R", "TCF7", "MKI67", "ICOS", "GZMK", 
+                  "PRF1", "RORC", "TNFRSF4", "IKZF2", "KLRC1", "KLF6", "PDCD1", "CXCR4", "GPR183")
+
+Marker_gene_rows <- which(rownames(pseudo_Tcells@assays$RNA$scale.data) %in% Marker_genes)
+Marker_genes_val <- pseudo_Tcells@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Tcell_marker_genes.png", width = 1000,
+    height = 900, res = 150)
+pheatmap(Marker_genes_val, main = "Gene expression \n(scaled z-score per gene)", angle_col = c("45"), cluster_cols = F)
+dev.off()
+
+png("Figures/Tcell_marker_genes_viridis.png",
+    width = 1000, height = 900, res = 150)
+pheatmap(Marker_genes_val, color = viridis(100), angle_col = c("45"), cluster_cols = F)
+dev.off()
+
+png("Figures/Tcell_marker_genes_viridis_no-tree.png",
+    width = 1000, height = 900, res = 150)
+pheatmap(Marker_genes_val, color = viridis(100), angle_col = c("45"), cluster_cols = F, treeheight_row = 0, cellwidth = 24, 
+         cellheight = 16)
+dev.off()
+```
+
+
+## Marker Genes B cells 
+
+```{r Marker genes B cells}
+Bcell_scobject <- readRDS(file = "Bcell_subclustering_BCRs_integrated_annotated.rds")
+
+Bcell_scobject <- RenameIdents(Bcell_scobject, 'Plasmacells_1' = 'PC_1', 'Plasmacells_2' = 'PC_2', 'Plasmacells_3' = 'PC_3/PB', 
+                       'Plasmacells_4' = 'PC_4', 'GC-like B cells' = 'GC B cells')
+
+Idents(Bcell_scobject) <- factor(Idents(Bcell_scobject), 
+                            levels = c("Naive B cells", "PC_1", "PC_2", "PC_3/PB", "PC_4", "Proliferating", "GC B cells"))
+
+Marker_genes_B <- c("MS4A1", "CD19", "CD79A", "MKI67", "CR2", "CD24", "CD27", "MZB1", "PRDM1", "SDC1", 
+                    "TNFRSF17", "IL4R", "CD72", "TNFRSF13B", "BCL6", "MME", "CD38", "ITGB7", "FAS", "STMN1", "PCNA", "CCR7")
+
+# TNFRSF17 = BCMA; TNFRSF13B = TACI
+
+DefaultAssay(Bcell_scobject) <- "RNA"
+
+DoHeatmap(Bcell_scobject, features = unique(Marker_genes_B), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+pseudo_Bcells  <- AggregateExpression(Bcell_scobject, assays = "RNA", return.seurat = T, 
+                                     group.by = "ident")
+
+DoHeatmap(pseudo_Bcells, features = unique(Marker_genes_B), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+Marker_genes_B_rows <- which(rownames(pseudo_Bcells@assays$RNA$scale.data) %in% Marker_genes_B)
+Marker_genes_B_genes <- pseudo_Bcells@assays$RNA$scale.data[Marker_genes_B_rows,]
+
+png("Figures/Bcell_marker_genes.png", width = 1000, 
+    height = 900, res = 150)
+pheatmap(Marker_genes_B_genes, main = "Gene expression \n(scaled z-score per gene)", angle_col = c("45"), cluster_cols = F)
+
+dev.off()
+
+png("Figures/Bcell_marker_genes_viridis.png",
+    width = 1000, height = 900, res = 150)
+pheatmap(Marker_genes_B_genes, main = "Gene expression \n(scaled z-score per gene)", color = viridis(100), angle_col = c("45"),
+         cluster_cols = F)
+dev.off()
+
+png("Figures/Bcell_marker_genes_viridis_no_tree.png",
+    width = 1200, height = 900, res = 150)
+pheatmap(Marker_genes_B_genes, main = "Gene expression \n(scaled z-score per gene)", color = viridis(100), angle_col = c("45"),
+         cluster_cols = F, cellwidth = 40, cellheight = 14, treeheight_row = 0)
+dev.off()
+
+# png("V:/GROUPS/AG Mackensen/Julia/CU1_1year_Analysis/Figures/Option1_Bcell_marker_genes_viridis_no_tree.png",
+#     width = 1200, height = 900, res = 150)
+# pheatmap::pheatmap(Marker_genes_B_genes, main = "Gene expression \n(scaled z-score per gene)",
+#                          color = viridis(100), angle_col = c("45"), cluster_cols = F, cellwidth = 40, cellheight = 14,
+#                          treeheight_row = 0, treeheight_col = 0,  fontsize_col = 14, fontsize_row = 14)
+# dev.off()
+# 
+# png("V:/GROUPS/AG Mackensen/Julia/CU1_1year_Analysis/Figures/Option2_Bcell_marker_genes_viridis_no_tree.png",
+#     width = 1200, height = 900, res = 150)
+# ComplexHeatmap::pheatmap(Marker_genes_B_genes, 
+#                          color = viridis(100), angle_col = c("45"), cluster_cols = F, cellwidth = 40, cellheight = 14,
+#                          treeheight_row = 15, treeheight_col = 0,  fontsize_col = 14, fontsize_row = 14, 
+#                          heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)"))
+# dev.off()
+
+pdf("Figures/Publication_ready/Bcell_marker_genes_viridis_no_tree.pdf",
+    width = 12, height = 9)
+ComplexHeatmap::pheatmap(Marker_genes_B_genes, 
+                         color = viridis(100), angle_col = c("45"), cluster_cols = F, cellwidth = 40, cellheight = 14,
+                         show_row_dend = F, treeheight_col = 0,  fontsize_col = 14, fontsize_row = 14, 
+                         heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"), 
+                                                     labels_gp = gpar(fontsize = 12)))
+dev.off()
+```

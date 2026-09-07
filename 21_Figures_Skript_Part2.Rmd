@@ -1,0 +1,643 @@
+---
+title: "Figures_Part2"
+author: "Julia Hitschfel"
+date: "2026-06-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(clusterProfiler)
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D")
+```
+
+## Cluster Marker Gene Dotplots
+
+```{r Dotplots marker genes, fig.heigth=14, fig.width=10}
+#All cells
+all.cells.seurat <- readRDS("integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+all.cells.seurat <- RenameIdents(all.cells.seurat, 'Epithelial_3' = 'Epithelial cells_2', 'Fibroblasts_1' = 'Fibroblasts', 
+                                 'Fibroblasts_2' = 'Fibroblasts (Activated)', 'Neurons' = 'Enteric glial cells',
+                                 'Myeloid cells (Macs)' = 'Myeloid cells (Macrophages)', 
+                                 'Myeloid cells (DCs)' = 'B cells',
+                                 'CD45+ immune cells' = 'T cells (Activated)', 'B cells' = 'B cells/Plasma cells', 
+                                 'Epithelial cells (early differentiated)' = 'Mature Enterocytes')
+
+Idents(all.cells.seurat) <- factor(Idents(all.cells.seurat), 
+                            levels = c("B cells/Plasma cells", "B cells", "CD4+ T cells", "CD8+ T cells",  "T cells (Activated)", 
+                                       "Endothelial cells", "Enteric glial cells", "Epithelial cells_1", "Epithelial cells_2", 
+                                       "Mature Enterocytes", "Secretory epithelial cells",  
+                                       "Fibroblasts", "Fibroblasts (Activated)", 
+                                       "Mast cells", "Myeloid cells (Macrophages)",
+                                       "Smooth Muscle cells",  "Proliferating epithelial cells"))
+
+all.cells.seurat <- PrepSCTFindMarkers(all.cells.seurat)
+Markers.all.cells <- FindAllMarkers(all.cells.seurat, logfc.threshold = 0.25, min.pct = 0.1, only.pos = T)
+
+write.csv(Markers.all.cells, file = "All_cells_marker_genes.csv")
+
+top5_genes <- Markers.all.cells %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 5) %>% ungroup()
+
+DotPlot(all.cells.seurat, features = unique(top5_genes$gene), assay = "SCT") + coord_flip() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_all_cells.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 16, width = 11, units = "in", compression = "lzw")
+
+## Heatmap
+pseudo_allcells <- AggregateExpression(all.cells.seurat, assays = "RNA", return.seurat = T, group.by = "ident")
+
+pseudo_allcells <- ScaleData(pseudo_allcells, features = unique(top5_genes$gene))
+Idents(pseudo_allcells) <- factor(Idents(pseudo_allcells), levels = rev(levels(Idents(pseudo_allcells))))
+Marker_gene_rows <- which(rownames(pseudo_allcells@assays$RNA$scale.data) %in% unique(top5_genes$gene))
+Marker_genes <- pseudo_allcells@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_all_cells_heatmap.tiff", width = 1000, 
+    height = 2000, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"))
+dev.off()
+
+png("Figures/Marker_genes_all_cells_heatmap_viridis.tiff",
+    width = 1000, height = 2000, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), color = viridis(100))
+dev.off()
+```
+
+```{r flipped dotplot, fig.width=15, fig.height=6}
+# Flipped dotplot
+Idents(all.cells.seurat) <- factor(Idents(all.cells.seurat), levels = rev(levels(Idents(all.cells.seurat))))
+DotPlot(all.cells.seurat, features = unique(top5_genes$gene), assay = "SCT") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.text = element_text(size = 12), 
+        axis.text = element_text(size = 12), axis.title = element_text(size = 14))
+
+ggsave("Figures/Marker_genes_all_cells_flip.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 18, height = 6, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Marker_genes_all_cells_flip.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 18, height = 6, units = "in")
+```
+
+### Dotplots and Heatmaps for immune cells 
+
+```{r Dotplots for T cells, fig.height=12, fig.width=10}
+Tcell.seurat <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcell.seurat <- RenameIdents(Tcell.seurat, 'Activated T cells?' = 'Activated T cells', 'TCM' = 'Naive/TCM', 'Treg' = 'CCR6+ Treg', 
+                       'IKZF2+ Treg' = 'Effector Treg', 'TPH?' = 'Tph-like', 'Th17' = 'Th17-like CD4', 
+                       'Proliferating T' = 'Proliferating cells', 'Undefined' = 'Memory CD8') 
+                                 
+Idents(Tcell.seurat) <- factor(Idents(Tcell.seurat), 
+                            levels = c("CD8+ TRM", "CD8+ GzmK+", "Naive/TCM", "Tph-like", "Th17-like CD4", "CCR6+ Treg", 
+                                       "Effector Treg", "Activated T cells", "NK/NKT cells", "Memory CD8",
+                                       "Proliferating cells"))
+
+Markers.Tcells <- FindAllMarkers(Tcell.seurat, logfc.threshold = 0.25, min.pct = 0.1, only.pos = T)
+
+top5_genes_Tcells <- Markers.Tcells %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 5) %>% ungroup()
+
+DotPlot(Tcell.seurat, features = unique(top5_genes_Tcells$gene), assay = "SCT") + 
+         coord_flip() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_Tcells.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 12, width = 8, units = "in", compression = "lzw")
+
+## Alternative Markers 
+Tcell_markers <- c("CD8A", "CD8B", "ITGAE", "GZMB", "GZMA", "GZMM", "ITGB7", "CD69", "NKG7", "CCL5", "GZMK", "GZMH", "IL7R", 
+                   "CCR7", "CXCR4", "TCF7", "KLF2", "FOS", "FOSB", "JUN", "IFNG", "TNF", "KLF6", "CD4", "FOXP3", "CTLA4", 
+                   "BATF", "TNFRSF18", "CCR6", "CCR4", "IL23R", "CXCR6","IKZF2", "CCR8", "IL2RA", "RTKN2", "TIGIT", "ICOS", 
+                   "TOX2", "CXCL13", "IL21", "IL17A", "IL26", "CCL20", "CD40LG", "RORA", "RORC", "CCL20", "MKI67", "CCNB2", 
+                   "PLK1", "TOP2A", "PRF1", "GNLY", "IL18", "NCAM1","SELL", "IL10", "FYN", "STAT4")
+
+DotPlot(Tcell.seurat, features = unique(Tcell_markers), assay = "SCT") + coord_flip() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_Tcells_custom.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 14, width = 8, units = "in", compression = "lzw")
+
+## Heatmap
+pseudo_Tcells <- AggregateExpression(Tcell.seurat, assays = "RNA", return.seurat = T, group.by = "ident")
+
+pseudo_Tcells <- ScaleData(pseudo_Tcells, features = unique(top5_genes_Tcells$gene))
+Idents(pseudo_Tcells) <- factor(Idents(pseudo_Tcells), levels = rev(levels(Idents(pseudo_Tcells))))
+Marker_gene_rows <- which(rownames(pseudo_Tcells@assays$RNA$scale.data) %in% unique(top5_genes_Tcells$gene))
+Marker_genes <- pseudo_Tcells@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_Tcells_heatmap.tiff", width = 900,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"))
+dev.off()
+
+png("Figures/Marker_genes_Tcells_heatmap_viridis.tiff",
+    width = 900, height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), color = viridis(100))
+dev.off()
+
+# flipped
+Marker_genes_flip <- t(Marker_genes)
+
+png("Figures/Marker_genes_Tcells_heatmap_flipped.tiff", width = 2200,
+    height = 700, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+        cellheight = 16, cellwidth = 16,  treeheight_col = 0)
+dev.off()
+
+png("Figures/Marker_genes_Tcells_heatmap_viridis_flipped.tiff",
+    width = 2200, height = 700, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         color = viridis(100), 
+         cellheight = 16, cellwidth = 16, treeheight_col = 0)
+dev.off()
+
+## Custom marker genes Heatmap
+pseudo_Tcells <- ScaleData(pseudo_Tcells, features = Tcell_markers)
+Marker_gene_rows <- which(rownames(pseudo_Tcells@assays$RNA$scale.data) %in% unique(Tcell_markers))
+Marker_genes <- pseudo_Tcells@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_Tcells_custom_heatmap.tiff", width = 900,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"))
+dev.off()
+
+png("Figures/Marker_genes_Tcells_custom_heatmap_viridis.tiff",
+    width = 900, height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), color = viridis(100))
+dev.off()
+
+# flipped custom marker genes
+Marker_genes_custom_flip <- t(Marker_genes)
+
+png("Figures/Marker_genes_Tcells_custom_heatmap_flipped.tiff", width = 2400,
+    height = 700, res = 150)
+pheatmap(Marker_genes_custom_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"),
+        cellheight = 16, cellwidth = 16,  treeheight_col = 0)
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Tcells_custom_heatmap_viridis_flipped.pdf",
+    width = 20, height = 6)
+pheatmap(Marker_genes_custom_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         color = viridis(100), cellheight = 16, cellwidth = 16, treeheight_col = 0, fontsize_row = 10, fontsize_col = 10)
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Tcells_custom_heatmap_viridis_flipped_optimized.pdf", width = 19, height = 5)
+ComplexHeatmap::pheatmap(Marker_genes_custom_flip,
+                         color = viridis(100), angle_col = c("45"), cluster_rows = F, cellwidth = 16, cellheight = 16,
+                         show_column_dend = F, treeheight_col = 0,  fontsize_col = 12, fontsize_row = 12,
+                         heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"),
+                                                     labels_gp = gpar(fontsize = 12)))
+dev.off()
+
+
+#Flipped Dotplot
+Idents(Tcell.seurat) <- factor(Idents(Tcell.seurat), levels = rev(levels(Idents(Tcell.seurat))))
+
+DotPlot(Tcell.seurat, features = unique(top5_genes_Tcells$gene), assay = "SCT") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave("Figures/Marker_genes_Tcells_flip.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 12, height = 4, units = "in", compression = "lzw")
+
+```
+
+```{r Dotplots for B cells, fig.width=12, fig.height=10}
+Bcell.seurat <- readRDS(file = "Bcell_subclustering_BCRs_integrated_annotated.rds")
+
+Bcell.seurat <- RenameIdents(Bcell.seurat, 'Plasmacells_1' = 'PC_1', 'Plasmacells_2' = 'PC_2', 'Plasmacells_3' = 'PC_3/PB', 
+                       'Plasmacells_4' = 'PC_4', 'GC-like B cells' = 'GC B cells')
+
+Idents(Bcell.seurat) <- factor(Idents(Bcell.seurat), 
+                            levels = c("Naive B cells", "PC_1", "PC_2", "PC_3/PB", "PC_4", "Proliferating", "GC B cells"))
+
+### B cells 
+Markers.Bcells <- FindAllMarkers(Bcell.seurat, logfc.threshold = 0.25, min.pct = 0.1, only.pos = T)
+
+top5_genes_Bcells <- Markers.Bcells %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 5) %>% ungroup()
+
+DotPlot(Bcell.seurat, features = unique(top5_genes_Bcells$gene), 
+        assay = "RNA") + coord_flip() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_Bcells.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 9, width = 6, units = "in", compression = "lzw")
+
+Idents(Bcell.seurat) <- factor(Idents(Bcell.seurat), levels = rev(levels(Idents(Bcell.seurat))))
+
+DotPlot(Bcell.seurat, features = unique(top5_genes_Bcells$gene), assay = "RNA") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave("Figures/Marker_genes_Bcells_flip.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 9, height = 4, units = "in", compression = "lzw")
+
+```
+
+```{r Dotplot for myeloid cells, fig.width=12, fig.height=10}
+myeloid.seurat <- readRDS(file = "Myeloid_Cells_annotated.rds")
+
+myeloid.seurat <- RenameIdents(myeloid.seurat, 'M1 Macrophages' = 'TREM2-like Macrophages', 'M2 Macrophages' = 'M2 tissue-resident', 
+                             'pDCs?' = 'Macrophages (undefined)', 'Epithelial?' = 'M1 Macrophages')
+
+Idents(myeloid.seurat) <- factor(Idents(myeloid.seurat), 
+                            levels = c("Inflammatory monocyte-derived Macrophages", "M1 Macrophages", 
+                                       "M2 tissue-resident", "TREM2-like Macrophages", "Macrophages (undefined)", 
+                                       "cDC1", "cDC2", "Neutrophils"))
+
+Markers.Myeloid <- FindAllMarkers(myeloid.seurat, logfc.threshold = 0.25, min.pct = 0.1, only.pos = T)
+
+top5_genes_Myeloid <- Markers.Myeloid %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 5) %>% ungroup()
+
+DotPlot(myeloid.seurat, features = unique(top5_genes_Myeloid$gene), assay = "SCT") + coord_flip() + 
+  scale_y_discrete(labels = c("Inflam. monocyte- \n derived Macrophages", "M1 Macrophages", 
+                                       "M2 tissue-resident", "TREM2-like Macrophages", "Macrophages (undefined)", 
+                                       "cDC1", "cDC2", "Neutrophils")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_Myeloid.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 9, width = 7, units = "in", compression = "lzw")
+
+## Alternative Markers (NOS2 has to be added later, as this is not present in the SCT Assay)
+Myeloid_markers <- c("CD14", "LYZ", "CTSS", "CTSB", "B2M", "SOD2", "CXCL8", "LILRB1", "VCAN", "FCN1", "S100A8", "S100A9", 
+                     "HIF1A", "NLRP3", "PRDX1", "AIF1",  "C1QB", "C1QC", "CCL24", "APOE", "LIPA", "CD68", "TREM2", "CD163L1", 
+                     "CD209", "C1QA", "STAB1", "MAF", "TGFB1", "MERTK", "IGF1", "CLEC9A", "IDO1", "IRF4", "CD1C", "FCER1A", 
+                     "CCR7", "FLT3", "LAMP3", "SIRPA", "PYCARD", "ALOX5AP","TNFSF14",  "CSF3R",  "FPR2", "TNFAIP6", "FCGR3B", 
+                     "TNF", "IL1B", "CXCL1",  "IRF5")
+
+DotPlot(myeloid.seurat, features = unique(Myeloid_markers), assay = "SCT") + coord_flip() + 
+  scale_y_discrete(labels = c("Inflam. monocyte- \n derived Macrophages", "M1 Macrophages", 
+                                       "M2 tissue-resident", "TREM2-like Macrophages", "Macrophages (undefined)", 
+                                       "cDC1", "cDC2", "Neutrophils")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_Myeloid_custom.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, height = 14, width = 9, units = "in", compression = "lzw")
+
+## Heatmap
+pseudo_Myeloid <- AggregateExpression(myeloid.seurat, assays = "RNA", return.seurat = T, group.by = "ident")
+
+pseudo_Myeloid <- ScaleData(pseudo_Myeloid, features = unique(top5_genes_Myeloid$gene))
+Marker_gene_rows <- which(rownames(pseudo_Myeloid@assays$RNA$scale.data) %in% unique(top5_genes_Myeloid$gene))
+Marker_genes <- pseudo_Myeloid@assays$RNA$scale.data[Marker_gene_rows,]
+custom_col_labels <- c("Inflam. monocyte- \n derived Macrophages", "M1 Macrophages", 
+                                       "M2 tissue-resident", "TREM2-like Macrophages", "Macrophages (undefined)", 
+                                       "cDC1", "cDC2", "Neutrophils")
+
+png("Figures/Marker_genes_Myeloid_heatmap.tiff", width = 1000,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), 
+         labels_col = custom_col_labels)
+dev.off()
+
+png("Figures/Marker_genes_Myeloid_heatmap_viridis.tiff",
+    width = 1000, height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), 
+         labels_col = custom_col_labels,
+         color = viridis(100))
+dev.off()
+
+## Heatmap flipped 
+Marker_genes_flip <- t(Marker_genes)
+
+png("Figures/Marker_genes_Myeloid_heatmap_flipped.tiff", width = 1850,
+    height = 900, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0,
+        cellwidth = 17, cellheight = 24, labels_row = custom_col_labels)
+dev.off()
+
+png("Figures/Marker_genes_Myeloid_heatmap_viridis_flipped.tiff",
+    width = 1850, height = 900, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0,
+         cellwidth = 17, cellheight = 24, labels_row = custom_col_labels, color = viridis(100))
+dev.off()
+
+## Custom marker genes Heatmap
+Myeloid_markers <- c(Myeloid_markers, "NOS2")
+pseudo_Myeloid <- ScaleData(pseudo_Myeloid, features = Myeloid_markers)
+Marker_gene_rows <- which(rownames(pseudo_Myeloid@assays$RNA$scale.data) %in% unique(Myeloid_markers))
+Marker_genes <- pseudo_Myeloid@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_Myeloid_custom_heatmap.tiff", width = 1000,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), 
+         labels_col = custom_col_labels)
+dev.off()
+
+png("Figures/Marker_genes_Myeloid_custom_heatmap_viridis.tiff",
+    width = 1000, height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), 
+         labels_col = custom_col_labels,color = viridis(100))
+dev.off()
+
+## Heatmap custom marker genes new flipped 
+Marker_genes_flip <- t(Marker_genes)
+
+png("Figures/Marker_genes_Myeloid_custom_heatmap_flipped.tiff", width = 2400,
+    height = 700, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0,
+        cellwidth = 17, cellheight = 24, labels_row = custom_col_labels)
+dev.off()
+
+png("Figures/Marker_genes_Myeloid_custom_heatmap_viridis_flipped.tiff",
+    width = 2400, height = 700, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0,
+         cellwidth = 17, cellheight = 24, labels_row = custom_col_labels, color = viridis(100))
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Myeloid_custom_heatmap_viridis_flipped.pdf",
+    width = 20, height = 6)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0,
+         cellwidth = 17, cellheight = 24, labels_row = custom_col_labels, color = viridis(100), fontsize_row = 10, fontsize_col = 10)
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Myeloid_custom_heatmap_viridis_flipped_optimized.pdf", width = 20, height = 6)
+ComplexHeatmap::pheatmap(Marker_genes_flip,
+                         color = viridis(100), angle_col = c("45"), cluster_rows = F, cellwidth = 17, cellheight = 24,
+                         show_column_dend = F, treeheight_col = 0,  fontsize_col = 12, fontsize_row = 12,
+                         labels_row = custom_col_labels,
+                         heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"),
+                                                     labels_gp = gpar(fontsize = 12)))
+dev.off()
+
+## Flipped Dotplot Myeloid Cells
+Idents(myeloid.seurat) <- factor(Idents(myeloid.seurat), levels = rev(levels(Idents(myeloid.seurat))))
+
+DotPlot(myeloid.seurat, features = unique(top5_genes_Myeloid$gene), assay = "SCT") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave("Figures/Marker_genes_Myeloid_flip.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 12, height = 4, units = "in", compression = "lzw")
+
+```
+
+```{r Marker Genes Epithelial cells, fig.width=12, fig.height=10}
+epithelial.seurat <- readRDS(file = "Epithelial_Cells_annotated.rds")
+
+epithelial.seurat <- RenameIdents(epithelial.seurat, 'Stress-response epithelial cells' = 'OLFM4+ epithelial progenitors',
+                                'Cycling Transit Amplifying 1' = 'Transit Amplifying 1', 
+                                'Enterocytes (early differentiated)' = 'Mature Enterocytes 2', 
+                                'Mature Enterocytes' = 'Mature Enterocytes 1')
+
+Idents(epithelial.seurat) <- factor(Idents(epithelial.seurat), 
+                            levels = c("Goblet Cells", "Immature Goblet Cells", "Mature Enterocytes 1", "Mature Enterocytes 2", 
+                                       "Transit Amplifying 1", "Transit Amplifying 2",  
+                                       "OLFM4+ epithelial progenitors", "Intestinal Stem Cells", 
+                                       "Injury-response epithelial cells", "EMT-like secretory Epithelial",
+                                       "Enteroendocrine", "Paneth-like Cells", "BEST4+ Enterocytes"))
+                              
+
+Markers.epithelial <- FindAllMarkers(epithelial.seurat, logfc.threshold = 0.25, min.pct = 0.1, only.pos = T)
+
+top5_genes_epithelial <- Markers.epithelial %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 5) %>% ungroup()
+
+DotPlot(epithelial.seurat, features = unique(top5_genes_epithelial$gene), assay = "SCT") + coord_flip() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures/Marker_genes_epithelial.tiff", 
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, height = 11, width = 7, units = "in", compression = "lzw")
+
+Idents(epithelial.seurat) <- factor(Idents(epithelial.seurat), levels = rev(levels(Idents(epithelial.seurat))))
+
+DotPlot(epithelial.seurat, features = unique(top5_genes_epithelial$gene), assay = "SCT") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave("Figures/Marker_genes_epithelial_flip.tiff", 
+       plot = ggplot2::last_plot(), device = "tiff", dpi = 300, width = 14, height = 5, units = "in", compression = "lzw")
+
+# Heatmap for epithelial cells marker genes 
+Idents(epithelial.seurat) <- factor(Idents(epithelial.seurat), levels = rev(levels(Idents(epithelial.seurat))))
+pseudo_epithelial <- AggregateExpression(epithelial.seurat, assays = "RNA", return.seurat = T,
+                                     group.by = "ident")
+
+pseudo_epithelial <- ScaleData(pseudo_epithelial, features = unique(top5_genes_epithelial$gene))
+Marker_gene_rows <- which(rownames(pseudo_epithelial@assays$RNA$scale.data) %in% unique(top5_genes_epithelial$gene))
+Marker_genes <- pseudo_epithelial@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_Epithelial_heatmap.tiff", width = 1200,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), 
+         cellwidth = 22, cellheight = 11)
+dev.off()
+
+png("Figures/Marker_genes_Epithelial_heatmap_viridis.tiff",
+    width = 1200, height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"), color = viridis(100),
+         cellwidth = 22, cellheight = 11)
+dev.off()
+
+## Heatmap flipped 
+Marker_genes_flip <- t(Marker_genes)
+
+png("Figures/Marker_genes_Epithelial_heatmap_flipped.tiff", width = 2400,
+    height = 900, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), treeheight_col = 0,
+        cellwidth = 14, cellheight = 22)
+dev.off()
+
+png("Figures/Marker_genes_Epithelial_heatmap_viridis_flipped.tiff",
+    width = 2400, height = 900, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), treeheight_col = 0,
+         cellwidth = 14, cellheight = 22, color = viridis(100))
+dev.off()
+
+# Custom epithelial cell markers
+Epithelial_markers <- c("MUC2", "TFF3", "SPINK4", "ITLN1", "CLCA1", "KLK1", "OLFM4", "ATOH1", "TSPAN8", "SLC26A3", "CA2", "CA4", 
+                        "FABP1", "KRT8", "KRT18", "HES1", "EPCAM", "ELF3", "SMOC2", "LGR5", "ASCL2", "SOX9", "PROM1", "MKI67", 
+                        "CDC20", "CENPF", "CCNB1", "MCM7", "PCNA", "PCLAF", "TYMS", "SOX4", "ERN2", "TNFSF9", "SOCS1", "CXCL14", 
+                        "COL1A2", "VIM", "MUC5AC", "CHGB", "GCG", "PYY", "PCSK1N", "SCGN", "LYZ", "DEFA5", "DEFA6", "PRSS2", 
+                        "BEST4", "CA7", "OTOP2", "SPIB")
+
+pseudo_epithelial <- ScaleData(pseudo_epithelial, features = Epithelial_markers)
+Marker_gene_rows <- which(rownames(pseudo_epithelial@assays$RNA$scale.data) %in% unique(Epithelial_markers))
+Marker_genes <- pseudo_epithelial@assays$RNA$scale.data[Marker_gene_rows,]
+
+png("Figures/Marker_genes_Epithelial_custom_heatmap.tiff", width = 1000,
+    height = 1800, res = 150)
+pheatmap(Marker_genes, main = "Gene expression \n(scaled z-score per gene)", cluster_cols = F, angle_col = c("45"))
+dev.off()
+
+Marker_genes_flip <- t(Marker_genes)
+png("Figures/Marker_genes_Epithelial_custom_heatmap_viridis_flipped.tiff",
+    width = 2400, height = 900, res = 150)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0, cellwidth = 14, cellheight = 22, color = viridis(100), fontsize_row = 12, fontsize_col = 11)
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Epithelial_custom_heatmap_viridis_flipped.pdf",
+    width = 15, height = 6)
+pheatmap(Marker_genes_flip, main = "Gene expression \n(scaled z-score per gene)", cluster_rows = F, angle_col = c("45"), 
+         treeheight_col = 0, cellwidth = 14, cellheight = 22, color = viridis(100), fontsize_row = 12, fontsize_col = 11)
+dev.off()
+
+pdf("Figures/Publication_ready/Marker_genes_Epithelial_custom_heatmap_viridis_flipped_optimized.pdf", width = 16, height = 6)
+ComplexHeatmap::pheatmap(Marker_genes_flip,
+                         color = viridis(100), angle_col = c("45"), cluster_rows = F, cellwidth = 14, cellheight = 22,
+                         show_column_dend = F, treeheight_col = 0,  fontsize_col = 12, fontsize_row = 12,
+                         heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"),
+                                                     labels_gp = gpar(fontsize = 12)))
+dev.off()
+```
+
+
+## Violin Plots for T cell effector molecules/receptors associated with colitis
+
+```{r Violin Plots}
+#CXCL13 - TPH
+VlnPlot(Tcell.seurat, features = "CXCL13", idents = "Tph-like", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Tcells_TPH_CXCL13_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+#IL21 - TPH
+VlnPlot(Tcell.seurat, features = "IL21", idents = "Tph-like", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Tcells_TPH_IL21_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+
+VlnPlot(Tcell.seurat, features = "CD40LG", idents = "Tph-like", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "SELL", idents = "Tph-like", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "CCL5", idents = "Tph-like", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "IL21", idents = "Th17-like CD4", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "GPR15", idents = "Th17-like CD4", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "CCL5", idents = "Th17-like CD4", group.by = "tp")
+
+# IL17A - Th17
+VlnPlot(Tcell.seurat, features = "IL17A", idents = "Th17-like CD4", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Tcells_Th17_IL17A_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+VlnPlot(Tcell.seurat, features = "GPR15", idents = "CCR6+ Treg", group.by = "tp")
+VlnPlot(Tcell.seurat, features = "IRF1", idents = "CCR6+ Treg", group.by = "tp")
+
+# IL10 - CCR6+ Treg
+VlnPlot(Tcell.seurat, features = "IL10", idents = "CCR6+ Treg", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Tcells_Treg_IL10_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+## Treg2 does not produce IL10
+VlnPlot(Tcell.seurat, features = "IL10", idents = "IKZF2+ Treg", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+# IL17A - Treg
+VlnPlot(Tcell.seurat, features = "IL17A", idents = "CCR6+ Treg", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Tcells_Treg_IL17A_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+## IKZF2+ Treg does not produce IL17A
+```
+
+## Violin Plots for myeloid cells 
+
+```{r Violins myeloid cells}
+## Violin Plots 
+Macrophages.idents <- c("M1 Macrophages", "Inflammatory monocyte-derived Macrophages", "M2 Macrophages")
+VlnPlot(myeloid.seurat, features = "CXCL9", idents = Macrophages.idents, group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = farbenblind15) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"))
+
+ggsave("Figures/Myeloid_cells_Macrophages_CXCL9_timepoints.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+```
+
+```{r New violins B cells}
+Idents(Bcell.seurat) <- factor(Idents(Bcell.seurat), levels = rev(levels(Idents(Bcell.seurat))))
+
+VlnPlot(Bcell.seurat, features = "ITGB7", cols = rep("lightgrey", 7)) + 
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) + NoLegend()
+
+ggsave("Figures/Bcells_ITGB7_clusters_grey.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Bcells_ITGB7_clusters_grey.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 8, height = 6, units = "in")
+
+VlnPlot(Bcell.seurat, features = "CD19", group.by = "tp") + 
+  scale_fill_manual(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y"), 
+                    values = rep("lightgrey", 9)) + 
+  scale_x_discrete(labels = c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")) + 
+   theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) + NoLegend()
+
+ggsave("Figures/Bcells_CD19_timepoints_grey.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 8, height = 6, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Bcells_CD19_timepoints_grey.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 8, height = 6, units = "in")
+
+
+## Cell Cycle Scores
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+Bcell.seurat <- CellCycleScoring(Bcell.seurat,
+                                  s.features = s.genes,
+                                  g2m.features = g2m.genes)
+Bcell.seurat$Annotation <- Idents(Bcell.seurat)
+
+ggplot(Bcell.seurat@meta.data, aes(x = Annotation, y = S.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16))
+
+ggsave("Figures/Bcells_S_score.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 7, height = 5, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Bcells_S_score.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 7, height = 5, units = "in")
+
+ggplot(Bcell.seurat@meta.data, aes(x = Annotation, y = G2M.Score)) + geom_boxplot() + 
+  theme_classic() + theme(axis.text.x = element_text(vjust = 0.85, hjust = 0.95, angle = 45), legend.text = element_text(size = 14), 
+        axis.text = element_text(size = 14), axis.title = element_text(size = 16))
+
+ggsave("Figures/Bcells_G2M_score.tiff", 
+       plot = last_plot(), device = "tiff", dpi = 300, width = 7, height = 5, units = "in", compression = "lzw")
+
+ggsave("Figures/Publication_ready/Bcells_G2M_score.pdf", 
+       plot = last_plot(), device = "pdf", dpi = 300, width = 7, height = 5, units = "in")
+```

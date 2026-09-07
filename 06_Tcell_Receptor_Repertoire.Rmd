@@ -1,0 +1,629 @@
+---
+title: "06_Tcell_Receptor_Analysis"
+author: "Julia Hitschfel"
+date: "2026-05-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(scRepertoire)
+library(Seurat)
+library(dplyr)
+library(tidyr)
+```
+
+## T cell rezeptor sequences
+
+In this script the T cell receptor repertoire will be examined. 
+The package scRepertoire will be used and documentation can be found here:  
+https://www.borch.dev/uploads/screpertoire/articles/attaching_sc
+
+```{r Import Data}
+Tcell_scobject <- readRDS(file = "Tcell_subclustering_CCA_Integration_annotated.rds")
+
+# Directory example
+all.tps <- list.dirs("data/", recursive = F)
+contig.path <- "/vdj_t/filtered_contig_annotations.csv"
+contig.list <- list()
+counter <- 1
+
+for(i in all.tps){
+  vdj_t_contig <- read.csv(paste0(i, contig.path))
+  contig.list[[counter]] <- vdj_t_contig
+  counter <- counter + 1
+}
+```
+
+```{r Basic Clonal Analysis}
+combined.TCR <- combineTCR(contig.list, 
+                           samples = c("T1",  "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"),
+                           removeNA = FALSE, 
+                           removeMulti = FALSE, 
+                           filterMulti = FALSE)
+
+head(combined.TCR[[1]])
+
+clonalQuant(combined.TCR, 
+            cloneCall="strict", 
+            chain = "both", 
+            scale = TRUE)
+
+clonalAbundance(combined.TCR, 
+                cloneCall = "gene", 
+                scale = TRUE)
+
+clonalCompare(combined.TCR, 
+                  top.clones = 3, 
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalScatter(combined.TCR, 
+              cloneCall ="gene", 
+              x.axis = "T5", 
+              y.axis = "T6",
+              dot.size = "total",
+              graph = "proportion")
+
+clonalScatter(combined.TCR, 
+              cloneCall ="gene", 
+              x.axis = "T6", 
+              y.axis = "T7",
+              dot.size = "total",
+              graph = "proportion")
+
+clonalScatter(combined.TCR, 
+              cloneCall ="gene", 
+              x.axis = "T7", 
+              y.axis = "T8",
+              dot.size = "total",
+              graph = "proportion")
+```
+
+The later timepoints show a strong clonotypic expansion that shows overlaps between different timepoints. 
+
+```{r Clonal Dynamics}
+clonalHomeostasis(combined.TCR, 
+                  cloneCall = "gene")
+
+clonalProportion(combined.TCR, 
+                 cloneCall = "gene")
+```
+
+## T Zell Rezeptor Expression gesamter Datensatz 
+
+```{r Check TCR Expression}
+scobject <- readRDS("integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+#the Cell Barcodes are different here, so we need to change the barcodes in scobject to be able to combine the expression 
+
+old_BCs <- colnames(scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("T1_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("T2_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("T3_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("T4_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("T5_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("T6_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("T7_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_8", old_BCs) == T, paste0("T8_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_9", old_BCs) == T, paste0("T9_",old_BCs), old_BCs) 
+
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+scobject <- RenameCells(scobject, new.names = new_BCs)
+
+sce <- as.SingleCellExperiment(scobject, assay = "SCT")
+
+sce <- combineExpression(combined.TCR, 
+                         sce, 
+                         cloneCall="gene", 
+                         group.by = "sample", 
+                         proportion = TRUE)
+
+#Define color palette 
+colorblind_vector <- hcl.colors(n=7, palette = "inferno", fixup = TRUE)
+
+scobject_TCR <- combineExpression(combined.TCR, 
+                                   scobject, 
+                                   cloneCall="gene", 
+                                   group.by = "sample", 
+                                   proportion = FALSE, 
+                                   cloneSize=c(Single=1, Small=5, Medium=20, Large=100,
+                                               Hyperexpanded=500))
+
+Seurat::DimPlot(scobject_TCR, group.by = "cloneSize") +
+    scale_color_manual(values=rev(colorblind_vector[c(1,3,4,5,7)]))
+
+DimPlot(scobject_TCR, label = T) + NoLegend()
+```
+
+Cells with a detectable T cell receptor sequence are mostly restricted to the two main T cell clusters and some are present in the CD45+ immune cell cluster. There are very few cells with a sequenced T cell receptor in the myeloid cell (DCs) cluster, which should be examined more closely.  
+
+
+```{r Overlay TCR Data and T cell Seurat}
+
+old_BCs <- colnames(Tcell_scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("T1_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("T2_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("T3_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("T4_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("T5_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("T6_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("T7_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_8", old_BCs) == T, paste0("T8_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_9", old_BCs) == T, paste0("T9_",old_BCs), old_BCs) 
+
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+Tcell_scobject <- RenameCells(Tcell_scobject, new.names = new_BCs)
+
+Tcell_scobject_TCR <- combineExpression(combined.TCR, 
+                                   Tcell_scobject, 
+                                   cloneCall="gene", 
+                                   group.by = "sample", 
+                                   proportion = FALSE, 
+                                   cloneSize=c(Single=1, Small=5, Medium=20, Large=100,
+                                               Hyperexpanded=500))
+
+Seurat::DimPlot(Tcell_scobject_TCR, group.by = "cloneSize") +
+    scale_color_manual(values=rev(colorblind_vector[c(1,3,4,5,7)]))
+
+DimPlot(Tcell_scobject_TCR, label = T) + NoLegend()
+
+saveRDS(Tcell_scobject_TCR,
+        file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+```
+
+Most cells contained in the T cell subclustering also have an associated T cell receptor sequence in the VDJ sequencing data. 
+The clusters where most cells don't have a T cell receptor sequence are the NK/NKT cell cluster, the undefined and the activated T cell cluster. 
+
+Expanded T cell clonotypes are mostly located in the CD8+ TRM cell cluster and partially within the CD8+ GzmK+ and in the proliferating T cell cluster. 
+
+
+```{r Expanded Clones}
+
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+              samples = c("T5", "T6"),
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+              samples = c("T6", "T7"),
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+              samples = c("T7", "T8"),
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+              samples = c("T8", "T9"),
+                  cloneCall="aa", 
+                  graph = "alluvial")
+```
+
+Two of the T cell clones from Mo 5 are detectable at an earlier timepoint. However, they make up a very small fraction of the total repertoire. 
+The Top 10 T cell clones from Mo 5 make up 25% of the total repertoire at that timepoint. This fits with the earlier graphs that clones with the indices 1-10 take up 20-25% of the repertoire at this timepoint. 
+
+The T cell receptor repertoire remains more consistent between Mo5 and Mo8, where at both timepoint the 10 most expanded clonotypes make up 25-30% of the total T cell receptor repertoire. Most of these expanded clonotypes are also detectable and expanded at both timpoints. 
+There is one clonotype that expands strongly between Mo5 and Mo8. This clone again contracts between Mo8 and Mo10, whereas a different T cell clonotype takes over the repertoire at Mo10. At Mo 10, the T cell receptor repertoire consist to 50% of expanded clonotypes. 
+At the 1 year timepoint, the expanded T cell clones have contracted somewhat and the percentage of singlets has increased. 
+
+The T cell clones present at earlier timepoints that also occur at Mo5 unfortunately don't have associated gene expression to identify their differentiation status. 
+
+Examining clonality and diversity before and after therapy: 
+
+```{r Clonal Diversity}
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+                  cloneCall="aa", 
+                  graph = "alluvial") + NoLegend()
+
+combined.TCR <- addVariable(combined.TCR, 
+                            variable.name = "Timepoint", 
+                            variables = c("Pre_CART", "Pre_CART", "Pre_CART", "Early_Post_CART",
+                                          "Early_Post_CART", "Late_Post_CART", "Late_Post_CART", "Late_Post_CART", "Late_Post_CART"))
+
+clonalDiversity(combined.TCR, 
+                cloneCall = "aa", 
+                chain = "TRB")
+
+clonalDiversity(combined.TCR, 
+                cloneCall = "aa",
+                chain = "TRB",
+                x.axis = "Timepoint",
+                metric = "inv.simpson")
+
+inv.simpson.table <- clonalDiversity(combined.TCR, 
+                cloneCall = "aa",
+                chain = "TRB",
+                x.axis = "Timepoint",
+                metric = "inv.simpson", exportTable = T)
+
+write.csv(inv.simpson.table, 
+            file = "VDJ_Analysis/TCR/inv_simpson_TP.csv")
+
+clonalDiversity(combined.TCR, 
+                cloneCall = "aa",
+                chain = "TRB",
+                x.axis = "Timepoint", 
+                metric = "shannon")
+
+shannon.table <- clonalDiversity(combined.TCR, 
+                cloneCall = "aa",
+                chain = "TRB",
+                x.axis = "Timepoint", 
+                metric = "shannon", exportTable = T)
+
+write.csv(shannon.table, 
+            file = "VDJ_Analysis/TCR/shannon_TP.csv")
+
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "raw")
+
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "morisita")
+
+MHSI <- clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "morisita", exportTable = T)
+
+write.csv(MHSI, 
+            file = "VDJ_Analysis/TCR/morisita_horn.csv")
+```
+
+Compare Barcodes with VDJ transcripts to the barcodes with associated gene expression in the T cell receptor subclustering and in the whole dataset: 
+
+```{r VDJ sequences with GEX}
+VDJ.barcodes <- vector()
+for(i in names(combined.TCR)){
+  VDJ.barcodes.tp <- combined.TCR[[i]]$barcode
+  VDJ.barcodes <- c(VDJ.barcodes, VDJ.barcodes.tp)
+}
+
+GEX.Tcell.barcodes <- rownames(Tcell_scobject@meta.data)
+
+Only.VDJ.Tcell.barcodes <- setdiff(VDJ.barcodes, GEX.Tcell.barcodes)
+
+print(paste0("There are ", length(Only.VDJ.Tcell.barcodes), 
+             " barcodes that were only found in the VDJ library and not in the GEX library in the T cell subclustering."))
+
+GEX.All.barcodes <- rownames(scobject@meta.data)
+
+Only.VDJ.barcodes <- setdiff(VDJ.barcodes, GEX.All.barcodes)
+
+print(paste0("There are ", length(Only.VDJ.barcodes), 
+             " barcodes that were only found in the VDJ library and not in the GEX library in the whole dataset."))
+```
+
+For the ~1220 barcodes with VDJ sequences but missing in the whole gene expression dataset, check whether there might be something problematic with these VDJ seqeunces:
+
+```{r VDJ with missing GEX}
+Maybe.T.cells <- setdiff(Only.VDJ.Tcell.barcodes, Only.VDJ.barcodes)
+# let's check if they are from a specific timepoint
+timepoints <- unique(substr(Maybe.T.cells, 0, 10))
+timepoints
+
+# No, shared between timepoints
+
+# Check if VDJ data
+scobject@meta.data$Annotation <- Idents(scobject)
+test.VDJ <- scobject@meta.data 
+test.VDJ$barcode <- rownames(test.VDJ)
+test.VDJ.sub <- subset(test.VDJ, barcode %in% Maybe.T.cells)
+
+Cluster.VDJ.missing <- test.VDJ.sub %>% group_by(Annotation) %>% summarise(n_Cluster = n())
+```
+
+## Examine specific clones
+
+```{r T cell clones}
+
+clonalCompare(combined.TCR, 
+              chain = "TRB",
+                  top.clones = 10, 
+              samples = c("T1", "T6"),
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+
+# Clone "CASSQDLSRVHEQFF"
+unique(Tcell_scobject_TCR@meta.data$date[grep("CASSQDLSRVHEQFF", Tcell_scobject_TCR@meta.data$CTaa)])
+
+# Clone "CASSRDLSSYEQYF"
+unique(Tcell_scobject_TCR@meta.data$date[grep("CASSRDLSSYEQYF", Tcell_scobject_TCR@meta.data$CTaa)])
+
+# Clone "CASSRDLSSYENQFF"
+unique(Tcell_scobject_TCR@meta.data$date[grep("CASSRDLSSYNEQFF", Tcell_scobject_TCR@meta.data$CTaa)])
+
+```
+The three T cell clones present on T1 and T6 are also detectable in the VDJ data to later timepoints. 
+We examine cluster identity of these clones to the different timepoints and see if there is a relationship between clonal overlap and cluster identity: 
+
+```{r GEX overlapping clones}
+length(grep("CASSRDLSSYEQYF", combined.TCR$`T9`$cdr3_aa2))
+length(grep("CASSRDLSSYEQYF", combined.TCR$`T8`$cdr3_aa2))
+length(grep("CASSRDLSSYEQYF", combined.TCR$`T7`$cdr3_aa2))
+length(grep("CASSRDLSSYEQYF", combined.TCR$`T6`$cdr3_aa2))
+length(grep("CASSRDLSSYEQYF", combined.TCR$`T1`$cdr3_aa2))
+
+
+Clone1_T9_BCs <- combined.TCR$`T9`$barcode[grep("CASSRDLSSYEQYF",
+                                                             combined.TCR$`T9`$cdr3_aa2)]
+Clone1_T8_BCs <- combined.TCR$`T8`$barcode[grep("CASSRDLSSYEQYF",
+                                                             combined.TCR$`T8`$cdr3_aa2)]
+Clone1_T7_BCs <- combined.TCR$`T7`$barcode[grep("CASSRDLSSYEQYF",
+                                                             combined.TCR$`T7`$cdr3_aa2)]
+Clone1_T6_BCs <- combined.TCR$`T6`$barcode[grep("CASSRDLSSYEQYF",
+                                                             combined.TCR$`T6`$cdr3_aa2)]
+Clone1_T1_BCs <- combined.TCR$`T1`$barcode[grep("CASSRDLSSYEQYF",
+                                                             combined.TCR$`T1`$cdr3_aa2)]
+
+length(grep("CASSRDLSSYNEQFF", combined.TCR$`T9`$cdr3_aa2))
+length(grep("CASSRDLSSYNEQFF", combined.TCR$`T8`$cdr3_aa2))
+length(grep("CASSRDLSSYNEQFF", combined.TCR$`T7`$cdr3_aa2))
+length(grep("CASSRDLSSYNEQFF", combined.TCR$`T6`$cdr3_aa2))
+length(grep("CASSRDLSSYNEQFF", combined.TCR$`T1`$cdr3_aa2))
+
+Clone2_T9_BCs <- combined.TCR$`T9`$barcode[grep("CASSRDLSSYNEQFF",
+                                                             combined.TCR$`T9`$cdr3_aa2)]
+Clone2_T8_BCs <- combined.TCR$`T8`$barcode[grep("CASSRDLSSYNEQFF",
+                                                             combined.TCR$`T8`$cdr3_aa2)]
+Clone2_T7_BCs <- combined.TCR$`T7`$barcode[grep("CASSRDLSSYNEQFF",
+                                                             combined.TCR$`T7`$cdr3_aa2)]
+Clone2_T6_BCs <- combined.TCR$`T6`$barcode[grep("CASSRDLSSYNEQFF",
+                                                             combined.TCR$`T6`$cdr3_aa2)]
+Clone2_T1_BCs <- combined.TCR$`T1`$barcode[grep("CASSRDLSSYNEQFF",
+                                                             combined.TCR$`T1`$cdr3_aa2)]
+```
+### Clone "CASSRDLSSYEQYF"
+The clone was detected 4 times at T9, 0 times at T8, and 12 times at T7 in the VDJ Library. 
+The clone occurs 46 times at T6 and is expanded at that timepoint. 
+We should verify that the clone also has associated gene expression and is not an artefact. 
+
+
+### Clone "CASSRDLSSYNEQFF"
+
+The second clones with an overlap between T1 and T9 is also expanded at T6 with 23 cell-associated barcodes in the VDJ data. 
+The clone is expanded at T7 with 8 unique cell barcodes in the VDJ Library. It is not detectable at T8, but is detected with three barcodes at T9.  
+
+Examine gene expression of these clones and in which clusters these clones fall on the UMAP: 
+
+```{r Overlap early and late timepoints}
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone1_T9_BCs, "Clone_1_CASSRDLSSYEQYF", 
+                                                      NA)
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone1_T8_BCs, "Clone_1_CASSRDLSSYEQYF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone1_T7_BCs, "Clone_1_CASSRDLSSYEQYF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone1_T6_BCs, "Clone_1_CASSRDLSSYEQYF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone1_T1_BCs, "Clone_1_CASSRDLSSYEQYF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone2_T9_BCs, "Clone_2_CASSRDLSSYNEQFF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone2_T8_BCs, "Clone_2_CASSRDLSSYNEQFF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone2_T7_BCs, "Clone_2_CASSRDLSSYNEQFF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone2_T6_BCs, "Clone_2_CASSRDLSSYNEQFF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                                        Clone2_T1_BCs, "Clone_2_CASSRDLSSYNEQFF", 
+                                                      Tcell_scobject_TCR@meta.data$Expanded.clones)
+
+Tcell_scobject_TCR@meta.data$Expanded.clones <- factor(Tcell_scobject_TCR@meta.data$Expanded.clones,
+                                                         levels = c("NA", "Clone_1_CASSRDLSSYEQYF", 
+                                                                    "Clone_2_CASSRDLSSYNEQFF"))
+
+Tcell_scobject_TCR$Expanded.clones <- factor(Tcell_scobject_TCR$Expanded.clones, levels = c("Clone_1_CASSRDLSSYEQYF", 
+                                                                    "Clone_2_CASSRDLSSYNEQFF", "NA"))
+DimPlot(Tcell_scobject_TCR, reduction = "umap", group.by = "Expanded.clones", pt.size = 1, 
+        cols = c("red", "blue", "lightgrey"))
+
+Clones_summary <- as.data.frame(table(Tcell_scobject_TCR@meta.data$Expanded.clones,
+                        Tcell_scobject_TCR@meta.data$tp))
+Clones_summary
+
+Clones_summary_cluster <- as.data.frame(table(Tcell_scobject_TCR@meta.data$Expanded.clones,
+                        Tcell_scobject_TCR@meta.data$tp, 
+                        Tcell_scobject_TCR@meta.data$Annotation))
+
+Clones_summary_cluster
+```
+
+Both clones can be detected in the T cell subclustering gene expression dataset, albeit at reduced numbers compared to the VDJ dataset. However, they seem like valid T cell clones that are expanded at early and late timepoints. These cells predominantly fall into the CD8+ TRM cluster. 
+
+### Clonal Overlap pre treatment 
+
+There are very few T cell clones that are detectable at multiple timepoints pre treatment. Two clones are detectable at T1 and T2 and a few clones overlap between T2 and T3. Since there are so few overlaps, there is probably no point in tracking individual clonotypes in this data but we can try to examine some clonal dynamics and overlaps in the data. 
+
+```{r }
+#ggraph needs to be loaded due to issues with ggplot
+library(ggraph)
+
+#No Identity filter
+clonalNetwork(Tcell_scobject_TCR, 
+              reduction = "umap", 
+              group.by = "Annotation",
+              filter.clones = NULL,
+              filter.identity = NULL,
+              cloneCall = "CTaa")
+
+clonalOccupy(Tcell_scobject_TCR, 
+              x.axis = "Annotation") + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+clonalOccupy(Tcell_scobject_TCR, 
+             x.axis = "Annotation", 
+             proportion = TRUE, 
+             label = FALSE) + theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+```
+
+Most clusters don't contain expanded clonotypes. The exception is mostly the CD8+ TRM cluster, and partially the undefined, the activated T cell cluster and the proliferating T cell cluster. 
+
+To better visualize the overlap at all timepoint, the Morisita-Horn Similarity Index will be used: 
+
+```{r MHSI over time}
+clonalOverlap(combined.TCR,
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "morisita")
+
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "raw")
+```
+
+The highest overlap is seen between the later timepoints. 
+To better estimate the overlap in expanded clones, singlets will be excluded from the analysis: 
+
+
+```{r Overlap with Doublets only}
+for(i in 1:length(combined.TCR)){
+Min_Doublet <- which(duplicated(combined.TCR[[i]]$cdr3_aa2))
+TRB_AA_Seq_Dbl <- unique(combined.TCR[[i]]$cdr3_aa2[Min_Doublet])
+combined.TCR[[i]] <- subset(combined.TCR[[i]], combined.TCR[[i]]$cdr3_aa2 %in% TRB_AA_Seq_Dbl)
+}
+
+clonalOverlap(combined.TCR,
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "morisita")
+
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "aa", 
+              method = "raw")
+```
+
+Finally, we examine if there are expanded T cell clones present pre-treatment, that are no longer present post-treatment: 
+
+```{r Clonal overlap before and after treatment}
+# Timepoints befor treatment
+TRBVs_before_CAR <- c(combined.TCR$`T1`$cdr3_aa2, combined.TCR$`T2`$cdr3_aa2,
+                      combined.TCR$`T3`$cdr3_aa2)
+
+TRBVs_before_CAR_NAfilt <- TRBVs_before_CAR[!is.na(TRBVs_before_CAR)]
+TRBVs_before_CAR_NAfilt <- unique(TRBVs_before_CAR_NAfilt)
+
+# Before treatment, there are 355 unique TCR beta chains detected by amino acid sequence 
+
+TRBVs_after_CAR <- c(combined.TCR$`T4`$cdr3_aa2, combined.TCR$`T5`$cdr3_aa2, combined.TCR$`T6`$cdr3_aa2,
+                     combined.TCR$`T7`$cdr3_aa2, combined.TCR$`T8`$cdr3_aa2, combined.TCR$`T9`$cdr3_aa2)
+
+TRBVs_after_CAR_NAfilt <- TRBVs_after_CAR[!is.na(TRBVs_after_CAR)]
+TRBVs_after_CAR_NAfilt <- unique(TRBVs_after_CAR_NAfilt)
+
+# After treatment, there are 411 unique TCR beta chains detected by amino acid sequence
+
+TRBVs_overlap <- intersect(TRBVs_before_CAR_NAfilt, TRBVs_after_CAR_NAfilt)
+# There are 31 TCR beta chains that overlap before and after treatment
+
+TRBVs_depleted <- setdiff(TRBVs_before_CAR_NAfilt, TRBVs_after_CAR_NAfilt)
+# There are 324 TCR beta chains that are present before treatment, but are not present after treatment
+
+TRBVs_new <- setdiff(TRBVs_after_CAR_NAfilt, TRBVs_before_CAR_NAfilt)
+# There are 582 TCR beta chains that are found after treatment, which are not detected prior to therapy 
+
+# We can now examine if these clonotypes fall within specific clusters, but my guess is that this is all stochastic 
+Tcell_scobject_TCR@meta.data <- Tcell_scobject_TCR@meta.data %>% 
+  separate(CTaa, into = c("aa_alpha", "aa_beta"), sep = "_")
+
+Cell_IDs_overlap <- rownames(Tcell_scobject_TCR@meta.data)[which(Tcell_scobject_TCR$aa_beta %in%
+                                                                   TRBVs_overlap)]
+Tcell_scobject_TCR$CAR.comparison <- rep(NA)
+Tcell_scobject_TCR$CAR.comparison <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                              Cell_IDs_overlap, "Persisting",
+                                            Tcell_scobject_TCR$CAR.comparison)
+# Clones depleted
+Cell_IDs_depleted <- rownames(Tcell_scobject_TCR@meta.data)[which(Tcell_scobject_TCR$aa_beta %in%
+                                                                   TRBVs_depleted)]
+
+Tcell_scobject_TCR$CAR.comparison <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                              Cell_IDs_depleted, "Depleted",
+                                            Tcell_scobject_TCR$CAR.comparison)
+
+# Clones new
+Cell_IDs_new <- rownames(Tcell_scobject_TCR@meta.data)[which(Tcell_scobject_TCR$aa_beta %in%
+                                                                   TRBVs_new)]
+
+Tcell_scobject_TCR$CAR.comparison <- ifelse(rownames(Tcell_scobject_TCR@meta.data) %in%
+                                              Cell_IDs_new, "New Clone",
+                                            Tcell_scobject_TCR$CAR.comparison)
+
+DimPlot(Tcell_scobject_TCR, reduction = "umap", group.by = "CAR.comparison", 
+        cols = c("blue", "lightblue", "yellow", "lightgrey"))
+
+DimPlot(Tcell_scobject_TCR, reduction = "umap", label = T)
+
+Persisting_Info <- Tcell_scobject_TCR@meta.data %>% filter(CAR.comparison == "Persisting") %>% 
+  select("CTgene", "CTnt", "aa_alpha", "aa_beta")
+
+write.csv(Persisting_Info, file = "VDJ_Analysis/TCR/Persisting_Tcell_clones.csv")
+
+Depleted_Info <- Tcell_scobject_TCR@meta.data %>% filter(CAR.comparison == "Depleted") %>% 
+  select("CTgene", "CTnt", "aa_alpha", "aa_beta")
+
+write.csv(Depleted_Info, file = "VDJ_Analysis/TCR/Depleted_Tcell_clones.csv")
+
+Depleted_expanded_beta_GEX <- Depleted_Info %>% group_by(aa_beta) %>% summarise(n = n())
+write.csv(Depleted_expanded_beta_GEX, file = "VDJ_Analysis/TCR/Depleted_expanded_TRBV_count.csv")
+
+New_Info <- Tcell_scobject_TCR@meta.data %>% filter(CAR.comparison == "New Clones") %>% 
+  select("CTgene", "CTnt", "aa_alpha", "aa_beta")
+
+write.csv(New_Info, file = "VDJ_Analysis/TCR/New_Tcell_clones.csv")
+```
+
+T cell receptor clones that are persisting after treatment or show new occurences after treatment are primarily present in the CD8+ TRM cluster
+
+Is there a bias in the TRBV or TRBJ usage:
+
+```{r Clonal Overlap gene usage}
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "gene", 
+              method = "raw")
+
+clonalOverlap(combined.TCR, 
+              chain = "TRB",
+              cloneCall = "gene", 
+              method = "morisita")
+
+```

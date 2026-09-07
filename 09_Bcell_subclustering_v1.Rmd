@@ -1,0 +1,605 @@
+---
+title: "09_Bcell_subclustering"
+author: "Julia Hitschfel"
+date: "2026-05-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(SeuratObject)
+library(scDblFinder)
+library(SingleCellExperiment)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(scRepertoire)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+```
+
+
+## Subclustering of B cells
+
+This script performs a subclustering analysis of the B cell subsets in this dataset. First, all clusters potentially containing B cells are identified and filters are established to exclude other cell types than B cells. 
+Integration will be performed by aggregating the few cells from B cell depleted timepoints to a "pseudo"-timepoint. 
+
+```{r Import Dataset}
+all_scobject <- readRDS(file = "integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+levels(Idents(all_scobject))
+```
+
+```{r Expression of B cell markers}
+VlnPlot(all_scobject, features = "CD19")
+VlnPlot(all_scobject, features = "MS4A1") #CD20
+VlnPlot(all_scobject, features = "MZB1")
+VlnPlot(all_scobject, features = "CD79A")
+
+VlnPlot(all_scobject, features = "IGHG1")
+VlnPlot(all_scobject, features = "IGHA1")
+VlnPlot(all_scobject, features = "IGHM")
+VlnPlot(all_scobject, features = "JCHAIN")
+
+VlnPlot(all_scobject, features = "TNFRSF13C")
+
+```
+
+The annotated B cell cluster is clearly expressing MZB1, which establishes the B cell identity. In addition, there seem to be some B cells present in the Epithelial cells_2 cluster, since expression of MZB1 is detectable in some of the cells contained in this cluster. Further, the CD45+ immune cell cluster also contains some cells expressing MZB1. 
+Cells present in the B cell cluster readily express CD79A, while a few cells in the myeloid cells (DCs) cluster also show CD79A expression, again indicating that this cluster either contains or even mostly consists of B cells. 
+
+Identification of Plasma cells/plasmablasts is more difficult. There are CD19 and MS4A1 (CD20) expressing cells within the proliferating epithelial cells cluster and in the myeloid cells (DCs) cluster. Both clusters should be included and cells that do not express B cell associated transcripts filtered out of the analysis.  
+IGHG1 and IGHA1 also show expression in the Epithelial cells_2 cluster, further suggesting the presence of B cells in this cluster. 
+
+Clusters potentially containing B cells (plasma cells/plasmablasts): 
+Epithelial cells_2, B cells, Proliferating epithelial cells, CD45+ immune cells, Myeloid cells (DCs), Myeloid cells (Macs)
+
+Marker genes used for filtering in other subclustering analyses: 
+Epithelzellen: KRT18 > 0, KRT8 > 0, PIGR > 1
+Monocytes: CD14 >1, IDO1 > 0, LYZ > 0
+T cells: CD3D > 0, CD3E > 0
+Erys: HBA1 > 0 
+pDCs: LILRB1 > 1
+
+```{r Extract Cell Barcodes potential B cell containing cluster}
+Bcell_BCs_combined <- WhichCells(all_scobject, idents = c("Epithelial cells_2", "B cells", "Proliferating epithelial cells", 
+                                                      "CD45+ immune cells", "Myeloid cells (DCs)", "Myeloid cells (Macs)"))
+
+
+All.data <- list.dirs("data/", recursive = F)
+list.10x <- list()
+counter <- 1
+for(i in All.data){
+  rnaseq.data <- Read10X_h5(paste0(i, "/count/sample_filtered_feature_bc_matrix.h5"))
+  pbmc <- CreateSeuratObject(counts = rnaseq.data, project = "Colitis", min.cells = 3, 
+                             min.features = 200)
+  pbmc <- RenameCells(pbmc, new.names = paste0(colnames(pbmc), "_", counter))
+  pbmc <- subset(pbmc, cells = Bcell_BCs_combined)
+  list.10x[[i]] <- pbmc
+  counter <- counter + 1
+}
+
+
+print("B Cell Numbers before Filtering:")
+for(i in list.10x){print(paste0(unique(i@meta.data$tp), ": ", nrow(i@meta.data)))}
+
+for(i in 1:length(list.10x)){  
+  pbmc <- list.10x[[i]]
+  pbmc@meta.data$tp <- substr(names(list.10x)[i], 6, 100)
+  Epithelial_Cells <- WhichCells(pbmc, expression = KRT8 > 0 | KRT18 > 0 | PIGR > 1, slot = "counts")
+  Myeloid_Cells <- WhichCells(pbmc, expression = CD14 > 0 | IDO1 > 0 | LYZ > 0, slot = "counts")
+  T_Cells_Erys <- WhichCells(pbmc, expression = CD3D > 0 | CD3E > 0 | HBA1 > 0, slot = "counts")
+  if("LILRB1" %in% rownames(pbmc@assays$RNA$counts)){
+    LILRB1_pDCs <- WhichCells(pbmc, expression = LILRB1 > 1, slot = "counts")
+  }
+  
+  ECs_filtered <- setdiff(rownames(pbmc@meta.data), Epithelial_Cells)
+  Myeloid_filtered <- setdiff(ECs_filtered, Myeloid_Cells)
+  B_Cells_filtered  <- setdiff( Myeloid_filtered, T_Cells_Erys)
+    if(exists("LILRB1_pDCs")){B_Cells_filtered <- setdiff(B_Cells_filtered , LILRB1_pDCs)}
+  pbmc <- subset(pbmc, cells = B_Cells_filtered)
+  pbmc@meta.data$percent.mt <- PercentageFeatureSet(pbmc, pattern = "^MT")
+  pbmc@meta.data$percent.rps <- PercentageFeatureSet(pbmc, pattern = "^RPS")
+  pbmc@meta.data$percent.rpl <- PercentageFeatureSet(pbmc, pattern = "^RPL")
+  list.10x[[i]] <- pbmc
+}
+
+scobject <- merge(x = list.10x[[1]], y = c(list.10x[2:length(list.10x)]))
+
+print("B cell numbers after filtering: ")
+
+for(i in list.10x){print(nrow(i@meta.data))}
+
+sum_table <- scobject@meta.data %>% group_by(tp) %>% summarise(RNA.count.median = median(nCount_RNA), 
+                                                                 RNA.feature.median = median(nFeature_RNA), 
+                                                               MT.freq.median = median(percent.mt),
+                                                                 RPS.freq.median = median(percent.rps), 
+                                                               RPL.freq.median = median(percent.rpl))
+
+sum_table
+```
+
+
+## Clustering without Integration 
+
+```{r Clustering}
+scobject <- NormalizeData(scobject, normalization.method = "LogNormalize", scale.factor = 10000)
+
+scobject <- FindVariableFeatures(scobject, selection.method = "vst", nfeatures = 2000)
+
+top10 <- head(VariableFeatures(scobject), 10)
+top10
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(scobject)  + NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE) + NoLegend()
+plot1 + plot2
+
+all.genes <- rownames(scobject)
+scobject <- ScaleData(scobject, features = all.genes)
+
+# Cluster after Regression 
+scobject <- RunPCA(scobject, features = VariableFeatures(object = scobject))
+
+# Examine and visualize PCA results a few different ways
+print(scobject[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(scobject, dims = 1:2, reduction = "pca")
+DimPlot(scobject, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(scobject, reduction = "pca", features = "percent.mt")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rps")
+FeaturePlot(scobject, reduction = "pca", features = "percent.rpl")
+
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) #+ NoLegend()
+FeaturePlot(scobject, features = "nCount_RNA", reduction = "pca", dims = c(1,3), max.cutoff = 5000) +
+  NoLegend()
+
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(scobject, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) + NoLegend()
+
+DimHeatmap(scobject, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(scobject, dims = 1:15, cells = 500, balanced = TRUE)
+
+ElbowPlot(scobject, ndims = 25)
+
+#Cluster the cells
+scobject <- FindNeighbors(scobject, dims = 1:20)
+scobject <- FindClusters(scobject, resolution = c(0.4, 0.6, 0.8))
+scobject <- RunUMAP(scobject, dims = 1:20)
+
+
+DimPlot(scobject, reduction = "umap", group.by = "RNA_snn_res.0.4", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "RNA_snn_res.0.6", label = T)
+DimPlot(scobject, reduction = "umap", group.by = "tp")
+DimPlot(scobject, reduction = "umap", group.by = "tp", split.by = "tp", ncol = 3)
+```
+
+
+```{r Explore marker expression}
+scobject <- JoinLayers(scobject)
+Idents(scobject) <- "RNA_snn_res.0.4"
+Markers_clusters_04 <- FindAllMarkers(scobject, logfc.threshold = 0.25, min.pct = 0.25, only.pos = T)
+
+write.csv(Markers_clusters_04, file = "Bcell_markergenes_res04_no_integration.csv")
+```
+
+```{r Markers for Clusters}
+# General B cell markers 
+VlnPlot(scobject, features = "CD19")
+VlnPlot(scobject, features = "MS4A1")
+VlnPlot(scobject, features = "CD79A")
+VlnPlot(scobject, features = "IGHA1")
+VlnPlot(scobject, features = "IGHG1")
+
+# Cluster 0 
+VlnPlot(scobject, features = "FCRL5")
+VlnPlot(scobject, features = "PRDM1")
+VlnPlot(scobject, features = "SDC1")
+VlnPlot(scobject, features = "SLAMF7")
+
+# Cluster 1 
+VlnPlot(scobject, features = "MZB1")
+VlnPlot(scobject, features = "JCHAIN")
+
+# Cluster 2 
+VlnPlot(scobject, features = "THEMIS")
+VlnPlot(scobject, features = "CD247")
+VlnPlot(scobject, features = "FYN")
+
+# Cluster 3 
+VlnPlot(scobject, features = "CD37")
+VlnPlot(scobject, features = "CD52")
+
+# Cluster 6
+VlnPlot(scobject, features = "UBE2C")
+VlnPlot(scobject, features = "TYMS")
+
+# Cluster 7 
+VlnPlot(scobject, features = "C1QB")
+VlnPlot(scobject, features = "CTSB")
+
+# Cluster 8 
+VlnPlot(scobject, features = "ELF3")
+VlnPlot(scobject, features = "COL6A2")
+
+# Cluster 10 
+VlnPlot(scobject, features = "KIT")
+VlnPlot(scobject, features = "GNLY")
+VlnPlot(scobject, features = "XCL1")
+
+# Cluster 11
+VlnPlot(scobject, features = "ITGAX")
+VlnPlot(scobject, features = "ZEB2")
+VlnPlot(scobject, features = "FGR")
+VlnPlot(scobject, features = "HCK")
+VlnPlot(scobject, features = "CXCR3")
+
+# Cluster 12 
+VlnPlot(scobject, features = "IGHD")
+VlnPlot(scobject, features = "IGHM")
+VlnPlot(scobject, features = "CXCR5")
+VlnPlot(scobject, features = "SELL")
+
+# Cluster 13 
+VlnPlot(scobject, features = "CLEC4C")
+
+```
+
+One of the top markers of Cluster 0 is associated with atypical B cells (FCRL5). 
+
+Additionally, cells in Cluster 0 and Cluster 4 express PRDM1, SDC1, and SLAMF7, which indicated a differentiated plasmacell cluster. this is supported by the expression of class-switched isotypes IGHA1 and IGHG1. 
+
+Cluster 1 expressed MZB1, JCHAIN, class-switched isotypes, but less of the fully differentiated plasma cell markers. 
+
+Cluster 2 expresses THEMIS, CD247, and FYN, which are T cell associated transcripts, playing a role in TCR signal transduction.Perhaps these transcripts should be included as filters. 
+
+Cells in Cluster 3 express MS4A1 (CD20) and many ribosomal transcripts, as well as CD37 and CD52. Other typical B cell markers are missing. 
+
+Cluster 5 expresses similar markers as 0 and 4 and likely are also plasma cells. 
+
+Cluster 6 and 9 show expression of proliferation markers. Cluster 9 further expresses CD19, CD20, CD79A and thus clearly is a proliferating B cell cluster. Cluster 6 is less certain, as classical B cell markers are only weakly expressed. 
+
+Cluster 7 shows expression of macrophage-associated transcripts (CTSB, C1Qb, C1Qc, APOE). 
+Cluster 8 also seems to be contaminating epithelial or stromal cells... 
+
+Cluster 9 represents proliferating B cells, which could be GC-like B cells due to expression of MME (CD10) and other GC marker genes. 
+
+Cluster 10 looks like a contamination of cytotoxic NK and T cells. 
+Filters need to be more stringent. 
+
+
+Improve filters to exclude: Macrophages (CTSB, C1QB), T cells (THEMIS, FYN, CD247), and cytotoxic cells (GNLY)
+
+## Issues 
+
+```{r Cluster over time}
+Cluster_over_time_filt <- scobject@meta.data %>% group_by(tp, RNA_snn_res.0.4) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_filt, aes(x = tp, y = Freq, fill = RNA_snn_res.0.4)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+```
+It seems that the B cell subclustering also is affected by batch effect, as there are some clusters that are only present at single timepoints. 
+Additionally, the transcript filters were not sufficient enough to remove other non-B cell populations. For better filtering, the B cell receptor sequencing data will be used, to exclude non B cells from the subclustering analysis.   
+
+
+## BCR Repertoire for filtering of B cell subclustering 
+
+```{r Read in VDJ data}
+# Read in VDJ Libraries
+all.tps <- list.dirs("data/", recursive = F)
+contig.path <- "/vdj_b/filtered_contig_annotations.csv"
+contig.list <- list()
+counter <- 1
+
+for(i in all.tps){
+  vdj_b_contig <- read.csv(paste0(i, contig.path))
+  contig.list[[counter]] <- vdj_b_contig
+  counter <- counter + 1
+}
+
+combined.BCR <- combineBCR(contig.list, 
+                           samples = c("T1",  "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"),
+                           removeNA = FALSE, 
+                           removeMulti = FALSE, 
+                           filterMulti = FALSE)
+
+head(combined.BCR[[1]])
+
+old_BCs <- colnames(scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("T1_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("T2_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("T3_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("T4_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("T5_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("T6_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("T7_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_8", old_BCs) == T, paste0("T8_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_9", old_BCs) == T, paste0("T9_",old_BCs), old_BCs) 
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+Bcell_scobject <- RenameCells(scobject, new.names = new_BCs)
+
+BCR.barcodes <- vector()
+for(i in 1:length(combined.BCR)){
+  barcodes <- combined.BCR[[i]]$barcode
+  BCR.barcodes <- c(BCR.barcodes, barcodes)
+}
+
+Bcell_scobject_filt <- subset(Bcell_scobject, cells = BCR.barcodes)
+
+nrow(Bcell_scobject@meta.data)
+nrow(Bcell_scobject_filt@meta.data)
+```
+If we filter on cells that have associated VDJ data, a higher amount of cells is removed that transcriptionally looks as if they are true B cells. To not loose so many B cells from the subclustering analysis, clusters with less than 10% of cells having a B cell receptor sequence detected in the VDJ assay will be removed, while clusters containing more than 10% of cells with a BCR will be kept for downsteam analysis. This should remove the clusters that mostly consist of T cells, epithelial cells, and macrophages, while not removing actual B cells that did not have VDJ capture. 
+ 
+
+```{r Compare Filtering}
+Cluster.totals <- Bcell_scobject@meta.data %>% group_by(RNA_snn_res.0.4) %>% summarise(Total.Cluster.Count = n())
+BCR.Bcells <- Bcell_scobject_filt@meta.data %>% group_by(RNA_snn_res.0.4) %>%
+  summarise(No.Cells.from.Cluster = n())
+
+BCR.Bcells <- left_join(BCR.Bcells, Cluster.totals, by = "RNA_snn_res.0.4")
+Freq.filtered.BCR <- BCR.Bcells %>% mutate(Freq.Cells.retained =
+                                            No.Cells.from.Cluster/Total.Cluster.Count*100)
+Freq.filtered.BCR
+```
+
+Note: Cluster 10 does not contain a single cell with a B cell receptor associated to the barcodes detected in the cluster. This makes sense, as this is likely a cytotoxic T cell contamination. This is the reason why cluster 10 is not listed in the table above. 
+
+```{r VDJ Sequences Clusters}
+Bcell_scobject <- combineExpression(combined.BCR, Bcell_scobject, 
+                                    cloneCall = "strict", proportion = FALSE, 
+                                    cloneSize = c(Single = 1, Small = 5, Medium = 20, Large = 100))
+
+Seurat::DimPlot(Bcell_scobject, group.by = "cloneSize") + 
+  scale_color_manual(values = rev(farbenblind15[c(10,4,8)]))
+
+Seurat::DimPlot(Bcell_scobject, group.by = "RNA_snn_res.0.4", label = T)
+```
+
+Retaining clusters with at least 10% of cells having a B cell receptor sequence seems like an appropriate way to filter the dataset: 
+
+```{r Filter clusters with less than 10% BCR capture}
+Bcell_scobject$BCR.present <- ifelse(is.na(Bcell_scobject$CTaa), "NO", "YES")
+
+Clusters.keep <- Bcell_scobject@meta.data %>% group_by(RNA_snn_res.0.4, BCR.present) %>%
+  summarise(BCR.count = n()) 
+
+Cluster.total.count <- Bcell_scobject@meta.data %>% group_by(RNA_snn_res.0.4) %>%
+  summarise(Cluster.count = n())
+
+Clusters.keep <- full_join(Clusters.keep, Cluster.total.count, by = "RNA_snn_res.0.4")
+Clusters.keep <- Clusters.keep %>% mutate(Freq.BCR = BCR.count/Cluster.count*100)
+
+Clusters.filt <- Clusters.keep %>% filter(BCR.present == "NO" & Freq.BCR >= 90)
+Clusters.filt
+
+Clusters.keep <- Clusters.keep %>% filter(BCR.present == "YES", Freq.BCR >= 10)
+Clusters.keep
+```
+
+
+```{r Filter clusters and redo Clustering}
+Clusters.keep.vec <- as.vector(Clusters.keep$RNA_snn_res.0.4)
+
+Bcell_scobject_filt <- subset(Bcell_scobject, idents = Clusters.keep.vec)
+
+# Remove prior normalization and scaling and remove non-coding, unannotated, and ribosomal transcripts to remove their influence on the B cell subclustering 
+
+Bcell_scobject_filt@assays$RNA$data <- NULL
+Bcell_scobject_filt@assays$RNA$scale.data <- NULL
+
+
+non.coding.transcripts <- rownames(Bcell_scobject_filt@assays$RNA)[grepl("^LINC",
+                                                            rownames(Bcell_scobject_filt@assays$RNA))]
+
+non.coding.transcripts.2 <- rownames(Bcell_scobject_filt@assays$RNA)[grepl("^AC[0-9]",
+                                                            rownames(Bcell_scobject_filt@assays$RNA))]
+
+non.coding.transcripts.3 <- rownames(Bcell_scobject_filt@assays$RNA)[grepl("^ENSG0",
+                                                            rownames(Bcell_scobject_filt@assays$RNA))]
+
+RPS.transcripts <- rownames(Bcell_scobject_filt@assays$RNA)[grepl("^RPS[0-9]*",
+                                                            rownames(Bcell_scobject_filt@assays$RNA))]
+
+RPL.transcripts <- rownames(Bcell_scobject_filt@assays$RNA)[grepl("^RPL[0-9]*",
+                                                            rownames(Bcell_scobject_filt@assays$RNA))]
+
+exclude.from.genes <- c(non.coding.transcripts, non.coding.transcripts.2,
+                                    non.coding.transcripts.3, RPS.transcripts, RPL.transcripts)
+
+Bcell_scobject_filt <- subset(
+  Bcell_scobject_filt,
+  features = setdiff(rownames(Bcell_scobject_filt), exclude.from.genes))
+
+# Pooling timepoints with very few B cells to perform integration: 
+
+small_samples <- c("T5", "T6", "T7", "T8", "T9")
+
+# Rename to create one "pseudo-bulk" sample
+Bcell_scobject_filt$timepoints_pooled <- Bcell_scobject_filt$tp
+Bcell_scobject_filt$timepoints_pooled[Bcell_scobject_filt$tp %in% small_samples] <- "post_CART"
+
+# Split object on new sample identity 
+Bcell_scobject_split_list <- SplitObject(Bcell_scobject_filt, split.by = "timepoints_pooled")
+
+Bcell_scobject_split_list <- lapply(Bcell_scobject_split_list, function(x) {
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+  return(x)
+})
+
+# Calculate anchors for Integration – k.filter needs to be decreased for the pooled sample
+anchors <- FindIntegrationAnchors(
+  object.list = Bcell_scobject_split_list,
+  k.filter = 45
+)
+
+# Integration
+Bcell_scobject_integrated <- IntegrateData(anchorset = anchors, k.weight = 45)
+
+DefaultAssay(Bcell_scobject_integrated) <- "integrated"
+Bcell_scobject_integrated <- ScaleData(Bcell_scobject_integrated)
+Bcell_scobject_integrated <- RunPCA(Bcell_scobject_integrated)
+Bcell_scobject_integrated <- FindNeighbors(Bcell_scobject_integrated, dims = 1:15)
+Bcell_scobject_integrated <- FindClusters(Bcell_scobject_integrated, resolution = c(0.2, 0.4, 0.6, 0.8))
+Bcell_scobject_integrated <- RunUMAP(Bcell_scobject_integrated, dims = 1:15)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "integrated_snn_res.0.2", label = T, 
+        cols = farbenblind15, label.size = 5, repel = T, label.color = "darkgoldenrod2", 
+        label.box = T)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "integrated_snn_res.0.4", label = T, 
+        cols = farbenblind15, label.size = 5, repel = T, label.color = "darkgoldenrod2", 
+        label.box = T)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "integrated_snn_res.0.6", label = T, 
+        cols = farbenblind15, label.size = 5, repel = T, label.color = "darkgoldenrod2", 
+        label.box = T)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "integrated_snn_res.0.8", label = T, 
+        cols = farbenblind15, label.size = 5, repel = T, label.color = "darkgoldenrod2", 
+        label.box = T)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "tp", cols = farbenblind15)
+
+DimPlot(Bcell_scobject_integrated, reduction = "umap", group.by = "tp", split.by = "tp", ncol = 3, 
+        cols = farbenblind15)
+
+
+# Examine and visualize PCA results a few different ways
+print(Bcell_scobject_integrated[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(Bcell_scobject_integrated, dims = 1:2, reduction = "pca")
+DimPlot(Bcell_scobject_integrated, reduction = "pca") + NoLegend()
+
+#Check some initial confounding factors on the PCA
+FeaturePlot(Bcell_scobject_integrated, reduction = "pca", features = "percent.mt")
+
+FeaturePlot(Bcell_scobject_integrated, features = "nCount_RNA", reduction = "pca", max.cutoff = 5000) 
+FeaturePlot(Bcell_scobject_integrated, features = "nCount_RNA", reduction = "pca", dims = c(1,3), 
+            max.cutoff = 5000) + NoLegend()
+
+FeaturePlot(Bcell_scobject_integrated, features = "nFeature_RNA", reduction = "pca") + NoLegend()
+FeaturePlot(Bcell_scobject_integrated, features = "nFeature_RNA", reduction = "pca", dims = c(1,3)) +
+  NoLegend()
+
+DimHeatmap(Bcell_scobject_integrated, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(Bcell_scobject_integrated, dims = 1:10, cells = 500, balanced = TRUE)
+ElbowPlot(Bcell_scobject_integrated, ndims = 25)
+
+
+Seurat::DimPlot(Bcell_scobject_integrated, group.by = "cloneSize") +
+    scale_color_manual(values=rev(farbenblind15[c(10,4,8)]))
+```
+
+```{r Marker genes for Resolution 0.4}
+Idents(Bcell_scobject_integrated) <- "integrated_snn_res.0.4"
+
+DefaultAssay(Bcell_scobject_integrated) <- "RNA"
+
+VlnPlot(Bcell_scobject_integrated, "MS4A1", cols = farbenblind15)
+ 
+VlnPlot(Bcell_scobject_integrated, "CD19", cols = farbenblind15)
+ 
+VlnPlot(Bcell_scobject_integrated, "MKI67", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "FCRL5", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "CD74", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "CD79A", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "CR2", cols = farbenblind15) #CD21
+ 
+VlnPlot(Bcell_scobject_integrated, "CD24", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "LILRA4", cols = farbenblind15)
+ 
+VlnPlot(Bcell_scobject_integrated, "ITGAX", cols = farbenblind15)
+
+
+VlnPlot(Bcell_scobject_integrated, "IGHG1", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "IGHA1", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "JCHAIN", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "CD22", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "CD27", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "IGHM", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "IGHD", cols = farbenblind15)
+
+VlnPlot(Bcell_scobject_integrated, "MZB1", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "PRDM1", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "SDC1", cols = farbenblind15)
+VlnPlot(Bcell_scobject_integrated, "TNFRSF13C", cols = farbenblind15) #BAFF-R
+VlnPlot(Bcell_scobject_integrated, "TNFRSF17", cols = farbenblind15) #BCMA
+```
+
+```{r Identify marker genes for integrated dataset}
+
+Bcell_scobject_integrated <- JoinLayers(Bcell_scobject_integrated)
+BCR.markers <- FindAllMarkers(Bcell_scobject_integrated, logfc.threshold = 0.25, min.pct = 0.25,
+                              only.pos = T)
+
+write.csv(BCR.markers, file = "Bcell_cluster_marker_genes_integrated_res04.csv")
+
+# Basic Heatmap with top DEG genes 
+top5_genes <- BCR.markers %>% group_by(cluster) %>% dplyr::filter(avg_log2FC > 0.5) %>%
+  slice_head(n = 5) %>% ungroup()
+
+
+DoHeatmap(Bcell_scobject_integrated, features = top5_genes$gene, assay = "RNA", group.by = "integrated_snn_res.0.4")
+
+DoHeatmap(Bcell_scobject_integrated, features = unique(top5_genes$gene), assay = "integrated", 
+          group.colors = farbenblind15) + NoLegend()
+
+DotPlot(Bcell_scobject_integrated, features = unique(top5_genes$gene), group.by = "integrated_snn_res.0.4", 
+        assay = "RNA") + coord_flip()
+
+
+saveRDS(Bcell_scobject_integrated, file = "Bcell_subclustering_BCRs_integrated.rds")
+```
+
+Preliminary Annotation: 
+Cluster 0: Plasma cells 1
+Cluster 1: Plasma cells 2 
+Cluster 2: Plasma cells 3
+Cluster 3: Unclear/APCs?
+Cluster 4: Plasma cells 4
+Cluster 5: GC-like B cells
+Cluster 6: Naive B cells
+
+```{r Cluster over time preliminary annotation}
+Bcell_scobject_integrated <- RenameIdents(Bcell_scobject_integrated, '0' = 'Plasmacells_1', '1' = 'Plasmacells_2', 
+                                          '2' = 'Plasmacells_3', '3' = 'Undefined', '4' = 'Plasmacells_4', '5' = 'GC-like B cells', 
+                                          '6' = 'Naive B cells')
+
+Bcell_scobject_integrated$Annotation <- Idents(Bcell_scobject_integrated) 
+
+Cluster_over_time_int <- Bcell_scobject_integrated@meta.data %>% group_by(tp, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+ggplot(Cluster_over_time_int, aes(x = tp, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+
+```
+
+Cell counts per timepoint: 
+T1  185
+T2  757
+T3  806
+T4  83
+T5  17
+T6  5
+T7  34
+T8  5
+T9  46
+
+

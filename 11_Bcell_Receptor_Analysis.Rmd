@@ -1,0 +1,313 @@
+---
+title: "11_Bcell_Receptor_Analysis"
+author: "Julia Hitschfel"
+date: "2026-05-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(SingleCellExperiment)
+library(SingleR)
+library(celldex)
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(scRepertoire)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D")
+```
+
+
+## B cell receptor sequence analysis 
+
+```{r Import data}
+scobject.BCR <- readRDS(file = "Bcell_subclustering_BCRs_integrated_annotated.rds")
+
+scobject <- readRDS(file = "integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+# Read in VDJ Libraries
+all.tps <- list.dirs("data/", recursive = F)
+contig.path <- "/vdj_b/filtered_contig_annotations.csv"
+contig.list <- list()
+counter <- 1
+
+for(i in all.tps){
+  vdj_b_contig <- read.csv(paste0(i, contig.path))
+  contig.list[[counter]] <- vdj_b_contig
+  counter <- counter + 1
+}
+
+combined.BCR <- combineBCR(contig.list, 
+                           samples = c("T1",  "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"),
+                           removeNA = FALSE, 
+                           removeMulti = FALSE, 
+                           filterMulti = FALSE)
+
+head(combined.BCR[[1]])
+```
+
+```{r Make BCs compatible in scobject}
+old_BCs <- colnames(scobject@assays$RNA$counts)
+old_BCs <- ifelse(grepl("_1", old_BCs) == T, paste0("T1_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_2", old_BCs) == T, paste0("T2_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_3", old_BCs) == T, paste0("T3_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_4", old_BCs) == T, paste0("T4_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_5", old_BCs) == T, paste0("T5_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_6", old_BCs) == T, paste0("T6_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_7", old_BCs) == T, paste0("T7_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_8", old_BCs) == T, paste0("T8_",old_BCs), old_BCs) 
+old_BCs <- ifelse(grepl("_9", old_BCs) == T, paste0("T9_",old_BCs), old_BCs) 
+new_BCs <- substr(old_BCs, 0, nchar(old_BCs) - 2)
+
+scobject <- RenameCells(scobject, new.names = new_BCs)
+```
+
+
+## VDJ without GEX
+
+```{r VDJ without GEX}
+BCR.barcodes <- vector()
+for(i in 1:length(combined.BCR)){
+  barcodes <- combined.BCR[[i]]$barcode
+  BCR.barcodes <- c(BCR.barcodes, barcodes)
+}
+
+VDJ.without.Bcell.GEX <- intersect(BCR.barcodes, rownames(scobject.BCR@meta.data))
+length(VDJ.without.Bcell.GEX)
+
+VDJ.without.total.GEX <- intersect(BCR.barcodes, rownames(scobject@meta.data))
+length(VDJ.without.total.GEX)
+```
+
+
+```{r Add timepoints for VDJ analysis}
+# Barcodes in contig.list do not have the addition of the timepoint, so we need to create that addition in the list to filter on cells with associated gene expression data: 
+
+date_BCs <- colnames(scobject.BCR@assays$RNA$counts)
+
+tps <- c("T1",  "T2", "T3", "T4", "T5", "T6",  "T7", "T8", "T9")
+
+tp.to.exclude <- vector()
+
+for(i in 1:length(contig.list)){
+  contig_filter <- contig.list[[i]]
+  contig_filter$barcode <- paste0(tps[i], "_", contig_filter$barcode)
+  contig_filter <- subset(contig_filter, contig_filter$barcode %in% date_BCs)
+  contig_filter$barcode <- substr(contig_filter$barcode, 4, 100)
+  if(nrow(contig_filter) > 0){
+  contig.list[[i]] <- contig_filter
+  } else{
+    print(paste0("Exclude timepoint ", i, " from BCR analysis."))
+    tp.to.exclude[i] <- i 
+  }
+}
+
+contig.list[tp.to.exclude] <- NULL
+
+combined.BCR.GEX <- combineBCR(contig.list,
+                           samples = c("T1",  "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"),
+                           removeNA = FALSE,
+                           removeMulti = FALSE,
+                           filterMulti = FALSE)
+
+head(combined.BCR.GEX[[1]])
+```
+
+
+## Basic Clonal Analysis BCRs
+
+```{r }
+clonalQuant(combined.BCR.GEX, 
+            cloneCall="strict", 
+            chain = "both", 
+            scale = TRUE)
+
+clonalAbundance(combined.BCR.GEX, 
+                cloneCall = "gene", 
+                scale = FALSE)
+
+clonalCompare(combined.BCR.GEX, 
+                  top.clones = 10, 
+                  samples = c("T1", "T2", "T3"), 
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.BCR.GEX, 
+                  top.clones = 10, 
+                  samples = c("T3", "T4", "T5"), 
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.BCR.GEX, 
+                  top.clones = 10, 
+                  samples = c("T5", "T7"), 
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalCompare(combined.BCR.GEX, 
+                  top.clones = 10, 
+                  samples = c("T7", "T8", "T9"), 
+                  cloneCall="aa", 
+                  graph = "alluvial")
+
+clonalProportion(combined.BCR.GEX, 
+                 cloneCall = "strict") 
+
+percentAA(combined.BCR.GEX, 
+          chain = "IGH", 
+          aa.length = 25)
+
+clonalDiversity(combined.BCR.GEX, 
+                cloneCall = "strict")
+
+clonalOverlap(combined.BCR.GEX, 
+              cloneCall = "strict", 
+              method = "raw")
+
+clonalOverlap(combined.BCR.GEX, 
+              cloneCall = "strict", 
+              method = "morisita")
+```
+
+At the early timepoints there are a few B cell clones that can be detected at multiple timepoints. 
+Following therapy, there are few overlaps between timepoints. 
+
+
+```{r Clones in B cell clusters}
+#Define color palette 
+colorblind_vector <- hcl.colors(n=7, palette = "inferno", fixup = TRUE)
+
+DimPlot(scobject.BCR, group.by = "cloneSize") +
+    scale_color_manual(values=rev(colorblind_vector[c(1,3,5,7)]))
+
+clonalOccupy(scobject.BCR, 
+              x.axis = "Annotation")
+
+clonalOccupy(scobject.BCR, 
+             x.axis = "Annotation", 
+             proportion = TRUE, 
+             label = FALSE)
+
+# Use the vegan package to calculate diversity across clusters:
+BCR.meta <- scobject.BCR@meta.data %>% group_by(Annotation, CTstrict) %>% summarise(n = n()) %>%
+  filter(!is.na(CTstrict))
+
+BCR.meta.shannon <- BCR.meta %>% group_by(Annotation) %>% dplyr::mutate(shannon_index =
+                                                                               vegan::diversity(n))
+
+ggplot(BCR.meta.shannon, aes(x = Annotation, y = shannon_index)) + geom_boxplot() + ylim(0,8)
+```
+
+Expanded clonotypes are mostly present in the GC-like B cell cluster and also within cluster Plasmacells_1. 
+This makes biologic sense, as B cells in germinal centers proliferate following activation through their BCR. 
+Whether these B cell clones are reactive against colitis-associated antigens would need further evaluation. 
+
+```{r Isotypes over time}
+VlnPlot(scobject.BCR, features = "IGHG1", group.by = "date") + 
+  scale_fill_manual(values = farbenblind15, drop = FALSE)
+
+VlnPlot(scobject.BCR, features = "IGHG2", group.by = "date") + 
+  scale_fill_manual(values = farbenblind15, drop = FALSE)
+
+VlnPlot(scobject.BCR, features = "IGHG4", group.by = "date") + 
+  scale_fill_manual(values = farbenblind15, drop = FALSE)
+
+VlnPlot(scobject.BCR, features = "IGHA1", group.by = "date") + 
+  scale_fill_manual(values = farbenblind15, drop = FALSE)
+
+VlnPlot(scobject.BCR, features = "IGHA2", group.by = "date") + 
+  scale_fill_manual(values = farbenblind15, drop = FALSE)
+```
+
+IGHG1 expressing B cells vanishing following therapy and also seem to not come back at the early timepoints of B cell reconstitution. 
+IGHA1 expressing cells are also depleted, however, there are a few B cells remaining that express this isotype and these are also earlier to replenish the repertoire. 
+
+### Isotypes on T8
+
+```{r }
+unique(combined.BCR.GEX$`T8`$CTgene)
+```
+
+
+### Expanded Clones on T7
+
+```{r B cell receptor expansion}
+length(unique(combined.BCR.GEX$`T7`$CTstrict))
+
+nrow(combined.BCR.GEX$`T7`)
+```
+
+
+### Expanded Clones on T5
+
+```{r Expanded clones T5}
+length(unique(combined.BCR.GEX$`T5`$CTstrict))
+
+nrow(combined.BCR.GEX$`T5`)
+```
+
+
+### Expanded Clones on T4
+
+```{r Expanded clones d10}
+length(unique(combined.BCR.GEX$`T4`$CTstrict))
+
+nrow(combined.BCR.GEX$`T4`)
+
+print("Potentially expanded B cell receptor clones on T4:")
+
+combined.BCR.GEX$`T4`$CTstrict[which(duplicated(combined.BCR.GEX$`T4`$CTstrict))]
+
+combined.BCR.GEX$`T4`$CTaa[which(duplicated(combined.BCR.GEX$`T4`$CTstrict))]
+```
+
+
+### Expanded Clones on T3
+
+```{r Expanded clones pre CAR T }
+length(unique(combined.BCR.GEX$`T3`$CTstrict))
+
+nrow(combined.BCR.GEX$`T3`)
+
+print("Potentially expanded B cell receptor clones on T3:")
+
+combined.BCR.GEX$`T3`$CTstrict[which(duplicated(combined.BCR.GEX$`T3`$CTstrict))]
+
+combined.BCR.GEX$`T3`$CTaa[which(duplicated(combined.BCR.GEX$`T3`$CTstrict))]
+```
+
+
+### Expanded Clones on T2
+
+```{r Expanded clones post T2}
+length(unique(combined.BCR.GEX$`T2`$CTstrict))
+
+nrow(combined.BCR.GEX$`T2`)
+
+print("Potentially expanded B cell receptor clones on T2:")
+
+unique(combined.BCR.GEX$`T2`$CTstrict[which(duplicated(combined.BCR.GEX$`T2`$CTstrict))])
+
+unique(combined.BCR.GEX$`T2`$CTaa[which(duplicated(combined.BCR.GEX$`T2`$CTstrict))])
+```
+
+
+### Expanded Clones on T1
+
+```{r Expanded clones pre Blina}
+length(unique(combined.BCR.GEX$`T1`$CTstrict))
+
+nrow(combined.BCR.GEX$`T1`)
+
+print("Potentially expanded B cell receptor clones on T1:")
+
+unique(combined.BCR.GEX$`T1`$CTstrict[which(duplicated(combined.BCR.GEX$`T1`$CTstrict))])
+
+unique(combined.BCR.GEX$`T1`$CTaa[which(duplicated(combined.BCR.GEX$`T1`$CTstrict))])
+```

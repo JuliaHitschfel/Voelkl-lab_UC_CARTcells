@@ -1,0 +1,100 @@
+---
+title: "05_Tcell_Cytokine_Expression"
+author: "Julia Hitschfel"
+date: "2026-05-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(SeuratObject)
+library(SingleCellExperiment)
+library(dplyr)
+library(ggplot2)
+library(colorspace)
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+```
+
+
+## T Cell Effector molecule expression
+
+Here the expression of canonical T cell cytokines and chemokines will be examined to better identify the T cell subpopulations in the subclustering analysis. 
+
+```{r Import dataset}
+Tcell_scobject <- readRDS(file = "Tcell_subclustering_CCA_Integration_annotated.rds")
+
+Effector_list <- c("IL1A", "IL1B","IL2", "IL4", "IL5", "IL6", "IL7", "CXCL8", "IL10", "IL12A", "TXLNA",
+                   "IL15", "IL16", "IL17A", "IL18", "IL19", "IL21", "IL22", "IL26", "EBI3", "IL32",
+                   "IL33", "GZMB", "PRF1", "GNLY", "GZMA", "GZMK", "TGFB1", "IFNG", "CXCL10",
+                   "CXCL13", "CCL4", "CCL5", "TNF", "LTA", "XCL1", "XCL2")
+
+DoHeatmap(Tcell_scobject, features = unique(Effector_list), assay = "SCT", slot = "scale.data") +
+  NoLegend()
+```
+
+Some of the features are not found in the SCT Assay, so expression will be plotted from the normalized and scaled RNA assay data: 
+
+```{r Scale RNA Data for Heatmap}
+DefaultAssay(Tcell_scobject) <- "RNA"
+Tcell_scobject <- NormalizeData(Tcell_scobject)
+Tcell_scobject <- ScaleData(Tcell_scobject, features = rownames(Tcell_scobject))
+
+DoHeatmap(Tcell_scobject, features = unique(Effector_list), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+```
+
+Many cytokines are lowly expressed but can be detected in some of the clusters. 
+Interleukin-1A and 1B, and Interleukin-2 only show weak expression. 
+Interleukin-3 was not detected in the data. 
+Interleukin-4, -5 and -6 also barely show expression in the T cell clusters. 
+CXCL8 shows partial expression in Cluster 1.
+Interleukin-9 was not detected in T cells, as was Interleukin-13.
+TXLNA (IL14) was only expressed in very few cells.
+EBI3 and IL27p28 are the genes encoding for IL-27. Only EBI3 expression is weakly detected. 
+IL28 and IL29 (IFN lambda) are not expressed in this dataset.
+
+The highest cytokine expression can be seen with IL7, IL10, IL16, IL17A, and IL26. 
+IL-32 also shows increased expression, as does IL-16.
+
+```{r Cytokines as Heatmap, fig.height=10, fig.width=10}
+pseudo_Tcells <- AggregateExpression(Tcell_scobject, assays = "RNA", return.seurat = T, 
+                                     group.by = "ident")
+
+DoHeatmap(pseudo_Tcells, features = unique(Effector_list), assay = "RNA", slot = "scale.data") +
+  NoLegend()
+
+Effector_gene_rows <- which(rownames(pseudo_Tcells@assays$RNA$scale.data) %in% Effector_list)
+Effector_genes <- pseudo_Tcells@assays$RNA$scale.data[Effector_gene_rows,]
+
+pheatmap(Effector_genes)
+
+pheatmap(Effector_genes, color = viridis(100))
+```
+
+```{r Cluster over time}
+Cluster_over_time <- Tcell_scobject@meta.data %>% group_by(tp, Annotation) %>% 
+  summarise(n = n()) %>% mutate(Freq = n/sum(n))
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+
+ggplot(Cluster_over_time, aes(x = tp, y = Freq, fill = Annotation)) + 
+  geom_col(color = "black") + scale_fill_manual(values = farbenblind15)
+```
+CD8+ TRM are increased after therapy. They decline a little bit after the last timepoint, but still remain elevated.
+CD8+ GzmK+ T cells also expand over time. They produce GzmK, IL10, IL19 and IL12A, which could be associated with a tissue repair program.
+CD8+ TCM cells show a constant frequency over time and express little cytokines except for some IL16. 
+Activated T cells also remain constant over time. They express IL2 and TNFa, as well as IFNg, which fits with their annotation as activated cells. 
+Regulatory T cells decline over time. They produce IL-10 - a classical Treg marker - but also CXCL8, IL17A, IL26, LTA and EBI3, perhaps indicating a pathogenic potential. 
+The second IKZF2+ Tregs (or CCR8+ Tregs) continue to decline, they show weaker expression of IL-10 but express inflammation-associated cytokines.  
+Annotated TPH cells show expressing of CXCL13 and IL-21, which supports their annotation as TPH cells since these are classical B cell help associated cytokines. 
+Th17 T cells also remain at constant frequencies and express IL15, IL17A, IL22 and IL26, supporting their annotation. 
+The undefined population shows little cytokine expression, only some CXCL10 and IL4. IL4 is associated with Th2 cells, while CXCL10 is not usually associated with T cells. These could be Quiescent T cells or Memory T cells without much activation or differentiation. 
+NK/NKT cells show a decline, as do the proliferating T cells. 
+

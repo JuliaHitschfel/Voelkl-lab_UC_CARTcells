@@ -1,0 +1,559 @@
+---
+title: "18_Heatmaps_Epithelial_cells_Fibroblasts"
+author: "Julia Hitschfel"
+date: "2026-06-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(viridis)
+library(circlize)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+
+date.colors <- brewer.pal(8, "Set2")
+```
+
+## Fibroblasts
+
+This script visualizes the expression of genes over the course of treatment that showed differential expression in the DEG analysis. 
+Scaled expression values of select genes associated with signaling in colits will be plotted. 
+
+```{r Fibroblasts}
+all.cells.seurat <- readRDS("integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+Fibros <- subset(all.cells.seurat, idents = c("Fibroblasts_1", "Fibroblasts_2"))
+
+Fibros.pseudo <- AggregateExpression(Fibros, assays = "RNA", return.seurat = F, group.by = c("tp"))
+
+head(Fibros.pseudo$RNA)
+
+#Expression is normalized and log transformed to later plot the scaled cytokine expression values in a heatmap 
+# counts -> TP10K
+tp10k <- t(t(as.matrix(Fibros.pseudo$RNA)) / colSums(as.matrix(Fibros.pseudo$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+# Examine leukocyte recruiting chemokine expression in fibroblasts 
+Fibros.cyto <- log_tp10k[c("IL6", "CXCL1", "CXCL2", "CXCL3", "CXCL5", "CXCL8", "CXCL13", "CCL19", "CCL21", "IL13RA2"), ]
+
+colnames(Fibros.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Fibros.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Fibros.cyto.zscore <- t(scale(t(Fibros.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Fibros.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+```{r ECM remodeling}
+# Genes associated with ECM remodeling
+Fibros.ECM <- log_tp10k[c("MMP1", "MMP3", "ADAM12", "ADAMTS12", "CTHRC1"), ]
+
+colnames(Fibros.ECM) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+ECM.heatmap <- Heatmap(Fibros.ECM, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of ECM remodeling proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+ECM.heatmap
+
+
+### z-score
+Fibros.ECM.zscore <- t(scale(t(Fibros.ECM)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+ECM.heatmap.zscore <- Heatmap(Fibros.ECM.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of ECM remodeling proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+ECM.heatmap.zscore
+```
+
+```{r Angiogenesis}
+Fibros.Angio <- log_tp10k[c("ANGPTL2", "ADM", "THBS2", "PDGFRB", "CAV1"), ]
+
+colnames(Fibros.Angio) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Angio.heatmap <- Heatmap(Fibros.Angio, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of Angiogenesis proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Angio.heatmap
+
+
+### z-score
+Fibros.Angio.zscore <- t(scale(t(Fibros.Angio)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Angio.heatmap.zscore <- Heatmap(Fibros.Angio.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of Angiogenesis proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Angio.heatmap.zscore
+```
+
+```{r ECM normalisation}
+# Select genes associated with a healthy ECM formation by fibroblasts 
+Fibros.ECM.norm <- log_tp10k[c("CLEC3B", "SPARCL1", "COL15A1", "SLIT2", "FBLN2"), ]
+
+colnames(Fibros.ECM.norm) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+ECM.norm.heatmap <- Heatmap(Fibros.ECM.norm, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of ECM normalization proteins in Fibroblasts", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+ECM.norm.heatmap
+
+
+### z-score
+Fibros.ECM.norm.zscore <- t(scale(t(Fibros.ECM.norm)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+ECM.norm.heatmap.zscore <- Heatmap(Fibros.ECM.norm.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of ECM normalization proteins in Fibroblasts", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+ECM.norm.heatmap.zscore
+```
+```{r Homeostasis}
+# Select genes expressed in fibroblasts in homeostasis
+Fibros.homeo <- log_tp10k[c("PPARG", "HAS2", "SLIT2", "SLIT3"), ]
+
+colnames(Fibros.homeo) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+homeo.heatmap <- Heatmap(Fibros.homeo, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of Homeostasis proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+homeo.heatmap
+
+
+### z-score
+Fibros.homeo.zscore <- t(scale(t(Fibros.homeo)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+homeo.heatmap.zscore <- Heatmap(Fibros.homeo.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of Homeostasis proteins in Fibroblasts", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+homeo.heatmap.zscore
+```
+
+### Combined Heatmap with selected genes from fibroblasts
+
+```{r combined heatmap fibroblasts}
+Inflammation.gene.list <- c("IL6", "CXCL1", "CXCL2","CXCL3", "CXCL5", "CXCL8", "CXCL13", "IL13RA2", "CCL19", "CCL21")
+ECM.remodeling.gene.list <- c("MMP1", "MMP3", "ADAM12", "ADAMTS12", "FAP", "CTHRC1", "FBLN2")
+ECM.stabilization.gene.list <- c("PPARG", "SPARCL1", "COL15A1", "CLEC3B", "SLIT2", "SLIT3")
+
+All.functions.fibro <- c(Inflammation.gene.list, ECM.remodeling.gene.list, ECM.stabilization.gene.list)
+
+# Combined table with all functions
+Fibroblasts.all.functions <- log_tp10k[All.functions.fibro, ]
+
+colnames(Fibroblasts.all.functions) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4), viridis(n = 17))
+Fibro.all.functions <- Heatmap(Fibroblasts.all.functions, name = "Gene expression \n(Log-transformed normalized expression)", 
+                               col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in Fibroblasts", 
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+Fibro.all.functions
+
+
+### z-score
+Fibroblasts.all.functions.zscore <- t(scale(t(Fibroblasts.all.functions)))
+
+Function.order <- c("Inflammation/ \nLeukocyte Recruitment", "ECM Remodeling", "ECM Restoration \n Quiescent Stromal State")
+Gene.function <- c(rep("Inflammation/ \nLeukocyte Recruitment", length(Inflammation.gene.list)), 
+                          rep("ECM Remodeling", length(ECM.remodeling.gene.list)), 
+                              rep("ECM Restoration \n Quiescent Stromal State", length(ECM.stabilization.gene.list)))
+
+Gene.function <- factor(Gene.function, levels = Function.order)
+
+Heatmap.cols <- colorRamp2(c(-1.75,-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5), viridis(n = 17))
+all.functions.zscore <- Heatmap(Fibroblasts.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in Fibroblasts", 
+        row_split = Gene.function,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(10, "cm"), height = unit(14, "cm"),
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+all.functions.zscore
+
+tiff(filename = "Figures/Heatmap_Fibroblasts.tiff", 
+     width = 2800, height = 2200, res = 300, compression = "lzw")
+
+draw(all.functions.zscore)
+
+dev.off()
+
+Annotation.color <- rowAnnotation(foo = anno_block(gp = gpar(fill = c("lightsalmon1", "olivedrab2", "skyblue1")), 
+                                                            labels = c("Inflammation/ \nLeukocyte Recruitment", "ECM Remodeling", 
+                                                                       "ECM Restoration \n Quiescent State"), 
+                                                            labels_gp = gpar(col = "black", fontsize = 10, fontface = "bold"), 
+                                                  width = unit(1, "cm")))
+
+all.functions.zscore.color <- Heatmap(Fibroblasts.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                     col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in Fibroblasts", 
+        row_split = Gene.function,
+        row_title = NULL,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(10, "cm"), height = unit(14, "cm"),
+        right_annotation = Annotation.color,
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+all.functions.zscore.color
+
+tiff(filename = "Figures/Heatmap_Fibroblasts_color-coded.tiff", 
+     width = 2600, height = 2200, res = 300, compression = "lzw")
+
+draw(all.functions.zscore.color)
+
+dev.off()
+
+Annotation.color.pdf <- rowAnnotation(foo = anno_block(gp = gpar(fill = c("lightsalmon1", "olivedrab2", "skyblue1")), 
+                                                            labels = c("Inflammation/ \nLeukocyte Recruitment", "ECM Remodeling", 
+                                                                       "ECM Restoration \n Quiescent State"), 
+                                                            labels_gp = gpar(col = "black", fontsize = 16, fontface = "bold"), 
+                                                  width = unit(2, "cm")))
+
+all.functions.zscore.color.pdf <- Heatmap(Fibroblasts.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                     col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in Fibroblasts", 
+        column_title_gp = gpar(fontsize = 20),
+        row_split = Gene.function,
+        row_title = NULL,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(15, "cm"), height = unit(21, "cm"),
+        right_annotation = Annotation.color.pdf,
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45, 
+        row_names_gp = gpar(fontsize = 15), column_names_gp = gpar(fontsize = 15), 
+        heatmap_legend_param = list(title_gp = gpar(fontsize = 14, fontface = "bold"), labels_gp = gpar(fontsize = 12), 
+                                    grid_height = unit(16, "mm"), grid_width = unit(6, "mm")))
+
+all.functions.zscore.color.pdf
+
+pdf("Figures/Publication_ready/Heatmap_Fibroblasts_color-coded.pdf", 
+     width = 17, height = 22)
+
+draw(all.functions.zscore.color.pdf)
+
+dev.off()
+```
+
+## Epithelial cells 
+
+```{r Epithelial cells cytokines}
+
+Epithelial <- readRDS(file = "Epithelial_Cells_annotated.rds")
+
+Epithelial.pseudo <- AggregateExpression(Epithelial, assays = "RNA", return.seurat = F, group.by = c("tp"))
+
+head(Epithelial.pseudo$RNA)
+
+#Expression is normalized and log transformed to later plot the scaled cytokine expression values in a heatmap
+# counts -> TP10K
+tp10k <- t(t(as.matrix(Epithelial.pseudo$RNA)) / colSums(as.matrix(Epithelial.pseudo$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+# Select cytokines associated with inflammation of epithelial cells
+Epithelial.cyto <- log_tp10k[c("TNF", "IL1A", "IL1B", "IL18", "IL23A", "IL32", "CSF2", "CXCL1", "CXCL3", "CXCL11", "CXCL17", "CCL25"), ]
+
+colnames(Epithelial.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Epithelial.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in epithelial cells", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Epithelial.cyto.zscore <- t(scale(t(Epithelial.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Epithelial.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in epithelial cells", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+```{r NFkB und TNF pathways}
+# Expression of genes upregulated during activation of NFkB or TNF pathway in epithelial cells 
+Epithelial.NFkB <- log_tp10k[c("MMP1", "MMP7", "MMP10", "MMP15", "PLAU", "COL18A1", "ECM1", "CEMIP", "FSTL1", "FSTL3", "NNMT"), ]
+
+colnames(Epithelial.NFkB) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+NFkB <- Heatmap(Epithelial.NFkB, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of tissue-remodeling proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+NFkB
+
+
+### z-score
+Epithelial.NFkB.zscore <- t(scale(t(Epithelial.NFkB)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+NFkB.zscore <- Heatmap(Epithelial.NFkB.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of tissue-remodeling proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+NFkB.zscore
+```
+
+```{r Leukocyte Adhesion}
+# Heatmap for genes associated with leukocyte adhesion pathways in epithelial cells 
+Epithelial.Adhesion <- log_tp10k[c("ICAM1", "ICAM2", "TNFRSF1A", "TNFAIP1", "MYD88", "CARD10"), ]
+
+colnames(Epithelial.Adhesion) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Adhesion <- Heatmap(Epithelial.Adhesion, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of leukocyte adhesion proteins in epithelial cells", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Adhesion
+
+
+### z-score
+Epithelial.Adhesion.zscore <- t(scale(t(Epithelial.Adhesion)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Adhesion.zscore <- Heatmap(Epithelial.Adhesion.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of leukocyte adhesion proteins in epithelial cells", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Adhesion.zscore
+```
+
+```{r }
+# Heatmap for genes associated with permeability and barrier dysfunction in epithelial cells
+Epithelial.Barrier <- log_tp10k[c("CLDN1", "CLDN2", "DEFB4A", "LTF", "GPX2", "S100A2", "S100A3", "SOD3", "KRT6B", 
+                                  "KRT16", "KRT17", "DUOX2"), ]
+
+colnames(Epithelial.Barrier) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Barrier <- Heatmap(Epithelial.Barrier, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, 
+        column_title = "Expression of Epithelial Barrier Dysfunction proteins in epithelial cells", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Barrier
+
+
+### z-score
+Epithelial.Barrier.zscore <- t(scale(t(Epithelial.Barrier)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Barrier.zscore <- Heatmap(Epithelial.Barrier.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, 
+        column_title = "Expression of Epithelial Barrier Dysfunction proteins in epithelial cells", 
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Barrier.zscore
+```
+
+```{r Epithelial secretory function}
+# Heatmap for select genes mediating secretory function of epithelial cells
+Epithelial.secretory <- log_tp10k[c("CLCA1", "ITLN2", "ZG16", "B4GALNT2", "GP2", "WFDC2", "LGALS2"), ]
+
+colnames(Epithelial.secretory) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+secretory <- Heatmap(Epithelial.secretory, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of secretion-related proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+secretory
+
+
+### z-score
+Epithelial.secretory.zscore <- t(scale(t(Epithelial.secretory)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+secretory.zscore <- Heatmap(Epithelial.secretory.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of secretion-related proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+secretory.zscore
+```
+
+```{r Improved barrier function}
+# Heatmap for select genes encoding for ion transporters and mediating barrier function of epithelial cells
+Epithelial.function <- log_tp10k[c("KCNMA1", "CACNA1A", "CACNA2D1", "KCNMB2", "CLDN15", "ZG16", "B3GNT6", 
+                                   "ST6GALNAC1", "ST6GALNAC3", "AQP8"), ]
+
+colnames(Epithelial.function) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Ep.function <- Heatmap(Epithelial.function, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of secretion-related proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Ep.function
+
+
+### z-score
+Epithelial.function.zscore <- t(scale(t(Epithelial.function)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+function.zscore <- Heatmap(Epithelial.function.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of secretion-related proteins in epithelial cells",
+        row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+function.zscore
+```
+
+### Heatmap Epithelial cells combined
+
+```{r Heatmap combined}
+Inflammation.gene.list <- c("TNF", "IL1A", "IL1B", "IL18", "IL23A", "IL32", "CSF2", "CXCL1", "CXCL3", "CXCL11", "CCL25")
+Barrier.dysfunction.gene.list <- c("CLDN1", "CLDN2", "DEFB4A", "LTF", "GPX2", "S100A2", "S100A3", "SOD3", "CA9", "DUOX2")
+Secretory.function.gene.list <- c("WFDC2", "CLCA1", "ZG16", "B4GALNT2", "GP2")
+Mucosal.barrier.gene.list <- c("CLDN15", "ITLN2", "ZG16", "B3GNT6", "ST6GALNAC1", "ST6GALNAC3", "LGALS2", "AQP8")
+
+All.functions.epi <- c(Inflammation.gene.list, Barrier.dysfunction.gene.list, Secretory.function.gene.list, Mucosal.barrier.gene.list)
+
+Epithelial.all.functions <- log_tp10k[All.functions.epi, ]
+
+colnames(Epithelial.all.functions) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4), viridis(n = 17))
+Ep.all.functions <- Heatmap(Epithelial.all.functions, name = "Gene expression \n(Log-transformed normalized expression)", 
+                            col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in epithelial cells", 
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+Ep.all.functions
+
+
+### Nochmal als z-score
+Epithelial.all.functions.zscore <- t(scale(t(Epithelial.all.functions)))
+
+Function.order <- c("Inflammation/ \nLeukocyte Recruitment", "Barrier Dysfunction", "Mucosal Barrier \nRestoration", "Secretory Function")
+Gene.function <- c(rep("Inflammation/ \nLeukocyte Recruitment", length(Inflammation.gene.list)), 
+                          rep("Barrier Dysfunction", length(Barrier.dysfunction.gene.list)), 
+                              rep("Secretory Function", length(Secretory.function.gene.list)), 
+                      rep("Mucosal Barrier \nRestoration", length(Mucosal.barrier.gene.list)))
+
+Gene.function <- factor(Gene.function, levels = Function.order)
+
+Heatmap.cols <- colorRamp2(c(-1.75,-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5), viridis(n = 17))
+all.functions.zscore <- Heatmap(Epithelial.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in epithelial cells", 
+        row_split = Gene.function,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(10, "cm"), height = unit(14, "cm"),
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+all.functions.zscore
+
+tiff(filename = "Figures/Heatmap_Epithelial_cells.tiff", 
+     width = 2800, height = 2200, res = 300, compression = "lzw")
+
+draw(all.functions.zscore)
+
+dev.off()
+
+Annotation.color <- rowAnnotation(foo = anno_block(gp = gpar(fill = c("lightsalmon1", "plum1", "olivedrab2", "skyblue1")), 
+                                                            labels = c("Inflammation/ \nLeukocyte Recruitment", "Barrier Dysfunction", 
+                                                                       "Mucosal Barrier \nRestoration", "Secretory \nFunction"), 
+                                                            labels_gp = gpar(col = "black", fontsize = 10, fontface = "bold"), 
+                                                  width = unit(1, "cm")))
+
+all.functions.zscore.color <- Heatmap(Epithelial.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                     col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in epithelial cells", 
+        row_split = Gene.function,
+        row_title = NULL,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(10, "cm"), height = unit(14, "cm"),
+        right_annotation = Annotation.color,
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45)
+
+all.functions.zscore.color
+
+tiff(filename = "Figures/Heatmap_Epithelial_cells_color-coded.tiff", 
+     width = 2600, height = 2200, res = 300, compression = "lzw")
+
+draw(all.functions.zscore.color)
+
+dev.off()
+
+
+### Heatmap as PDF
+Annotation.color.pdf <- rowAnnotation(foo = anno_block(gp = gpar(fill = c("lightsalmon1", "plum1", "olivedrab2", "skyblue1")), 
+                                                            labels = c("Inflammation/ \nLeukocyte Recruitment", "Barrier Dysfunction", 
+                                                                       "Mucosal Barrier \nRestoration", "Secretory \nFunction"), 
+                                                            labels_gp = gpar(col = "black", fontsize = 16, fontface = "bold"), 
+                                                  width = unit(2, "cm")))
+
+all.functions.zscore.color.pdf <- Heatmap(Epithelial.all.functions.zscore, name = "Gene expression \n(z-score of gene expression)", 
+                                     col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis-related transcripts in Epithelial cells", 
+        column_title_gp = gpar(fontsize = 20),
+        row_split = Gene.function,
+        row_title = NULL,
+        row_gap = unit(2.5, "mm"), border = T, width = unit(15, "cm"), height = unit(21, "cm"),
+        right_annotation = Annotation.color.pdf,
+        row_title_rot = 0, row_names_side = "left", column_names_rot = 45, 
+        row_names_gp = gpar(fontsize = 15), column_names_gp = gpar(fontsize = 15), 
+        heatmap_legend_param = list(title_gp = gpar(fontsize = 14, fontface = "bold"), labels_gp = gpar(fontsize = 12), 
+                                    grid_height = unit(16, "mm"), grid_width = unit(6, "mm")))
+
+all.functions.zscore.color.pdf
+
+pdf("Figures/Publication_ready/Heatmap_Epithelial_color-coded.pdf", 
+     width = 17, height = 22)
+
+draw(all.functions.zscore.color.pdf)
+
+dev.off()
+```

@@ -1,0 +1,446 @@
+---
+title: "19_Heatmaps_GSEA_Tcells"
+author: "Julia Hitschfel"
+date: "2026-07-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(viridis)
+library(circlize)
+
+farbenblind15 <- c("#000000","#004949","#009292","#FF6DB6","#FFB6DB",
+                  "#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF",
+                  "#920000","#924900","#DB6D00","#00A651","#FFFF6D") 
+```
+
+## TRM Heatmaps 
+
+```{r TRM Heatmap}
+Tcells <- readRDS(file = "Tcells_CCAintegration_annotation_TCRs.rds")
+
+Tcells <- RenameIdents(Tcells, 'Activated T cells?' = 'Activated T cells', 'TCM' = 'Naive/TCM', 'Treg' = 'CCR6+ Treg', 
+                       'IKZF2+ Treg' = 'Effector Treg', 'TPH?' = 'Tph-like', 'Th17' = 'Th17-like CD4', 
+                       'Proliferating T' = 'Proliferating cells', 'Undefined' = 'Memory CD8') 
+                                 
+Idents(Tcells) <- factor(Idents(Tcells), 
+                            levels = c("CD8+ TRM", "CD8+ GzmK+", "Naive/TCM", "Tph-like", "Th17-like CD4", "CCR6+ Treg", 
+                                       "Effector Treg", "Activated T cells", "NK/NKT cells", "Memory CD8",
+                                       "Proliferating cells"))
+
+Tcells.TRM <- subset(Tcells, idents = 'CD8+ TRM')
+
+Tcells.TRM.pseudo <- AggregateExpression(Tcells.TRM, assays = "RNA", return.seurat = F, group.by = c("tp"))
+
+head(Tcells.TRM.pseudo$RNA)
+
+# counts -> TP10K
+tp10k <- t(t(as.matrix(Tcells.TRM.pseudo$RNA)) / colSums(as.matrix(Tcells.TRM.pseudo$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+# Examine expression of inflammation associated cytokines in CD8+ TRM
+Tcells.cyto <- log_tp10k[c("TNF", "IL6", "IFNG", "LTB", "IRF4", "IL17A", "GZMB", "PRF1"), ]
+
+colnames(Tcells.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Tcells.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Tcells.cyto.zscore <- t(scale(t(Tcells.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Tcells.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+```{r TRM Activation}
+# Heatmap for select activation markers of CD8+ T cells
+Tcells.activation <- log_tp10k[c("CD69", "HLA-DRB1", "CD38", "MKI67", "EOMES", "CRTAM"), ]
+
+colnames(Tcells.activation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Activation <- Heatmap(Tcells.activation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation
+
+
+### z-score
+Tcells.activation.zscore <- t(scale(t(Tcells.activation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Activation.zscore <- Heatmap(Tcells.activation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation.zscore
+
+```
+
+```{r TRM Colitis}
+# Since there are multiple transcripts that contain the strings FAS, IL10 and IFIT1, the correct columns have to be selected with regular expressions and grep 
+Tcells.colitis <- log_tp10k[c(grep("CXCR3", rownames(log_tp10k)), grep("CXCR6", rownames(log_tp10k)),                                                                    grep("CCR6", rownames(log_tp10k)), grep("^FAS$", rownames(log_tp10k)), grep("TBX21", rownames(log_tp10k)), 
+                              grep("IL10$", rownames(log_tp10k)), grep("IFIT1$", rownames(log_tp10k)), grep("IFIT3", rownames(log_tp10k)),
+                              grep("IFI6", rownames(log_tp10k))), ]
+
+colnames(Tcells.colitis) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+colitis <- Heatmap(Tcells.colitis, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis
+
+
+### z-score
+Tcells.colitis.zscore <- t(scale(t(Tcells.colitis)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+colitis.zscore <- Heatmap(Tcells.colitis.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis.zscore
+```
+```{r TRM regulation}
+
+Tcells.regulation <- log_tp10k[c("ENTPD1", "NT5E", "IL22", "AREG", "TGFB1", "IL26"), ]
+
+colnames(Tcells.regulation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+regulation <- Heatmap(Tcells.regulation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation
+
+
+### z-score
+Tcells.regulation.zscore <- t(scale(t(Tcells.regulation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+regulation.zscore <- Heatmap(Tcells.regulation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation.zscore
+
+```
+
+```{r TRM selected genes}
+
+Tcells.selected <- log_tp10k[c("PRF1", "GZMB", "LTB", "TNF", "TGFB1", "XCL1", "KLF2", "HBEGF"), ]
+
+colnames(Tcells.selected) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+selected <- Heatmap(Tcells.selected, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of selected markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+selected
+
+
+### z-score
+Tcells.selected.zscore <- t(scale(t(Tcells.selected)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+selected.zscore <- Heatmap(Tcells.selected.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of selected markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45, row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 12),
+        width = 8, height = 5,
+        heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"),
+                                                     labels_gp = gpar(fontsize = 12)))
+
+selected.zscore
+
+pdf("Figures/Publication_ready/TRM_selected_gene_zscore_over_time.pdf", 
+    width = 8, height = 5)
+selected.zscore
+dev.off()
+
+## Without XCL1, KLF2, and HBEGF
+Tcells.selected.2 <- log_tp10k[c("PRF1", "GZMB", "LTB", "TNF", "TGFB1"), ]
+
+colnames(Tcells.selected.2) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+selected.2 <- Heatmap(Tcells.selected.2, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of selected markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+selected.2
+
+
+### z-score
+Tcells.selected.zscore.2 <- t(scale(t(Tcells.selected.2)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+selected.zscore.2 <- Heatmap(Tcells.selected.zscore.2, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of selected markers in CD8+ TRM", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45, row_names_gp = gpar(fontsize = 12), column_names_gp = gpar(fontsize = 12),
+        width = 8, height = 5,
+        heatmap_legend_param = list(title = "Gene expression \n(scaled z-score per gene)",
+                                                     title_gp = gpar(fontsize = 12, fontface = "bold"),
+                                                     grid_height = unit(8, "mm"), grid_width = unit(5, "mm"),
+                                                     labels_gp = gpar(fontsize = 12)))
+
+selected.zscore.2
+
+pdf("Figures/Publication_ready/TRM_selected_gene_zscore_over_time_option2.pdf", 
+    width = 8, height = 3.5)
+selected.zscore.2
+dev.off()
+
+```
+
+
+## CCR6+ Tregs
+
+```{r CCR6+ Tregs inflammation}
+Tcells.CCR6Treg <- subset(Tcells, idents = 'CCR6+ Treg')
+
+Tcells.CCR6Treg <- AggregateExpression(Tcells.CCR6Treg, assays = "RNA", return.seurat = F, group.by = c("tp"))
+
+head(Tcells.CCR6Treg$RNA)
+
+# counts -> TP10K
+tp10k <- t(t(as.matrix(Tcells.CCR6Treg$RNA)) / colSums(as.matrix(Tcells.CCR6Treg$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+Tcells.cyto <- log_tp10k[c("TNF", "IL6", "IFNG", "LTB", "IRF4", "IL17A", "GZMB", "PRF1"), ]
+
+colnames(Tcells.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Tcells.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in CCR6+ Treg", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Tcells.cyto.zscore <- t(scale(t(Tcells.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Tcells.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in CCR6+ Treg", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+```{r CCR6 Tregs Activation}
+Tcells.activation <- log_tp10k[c("CD69", "HLA-DRB1", "CD38", "MKI67", "EOMES", "CRTAM"), ]
+
+colnames(Tcells.activation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Activation <- Heatmap(Tcells.activation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation
+
+
+### z-score
+Tcells.activation.zscore <- t(scale(t(Tcells.activation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Activation.zscore <- Heatmap(Tcells.activation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation.zscore
+```
+
+```{r CCR6 Tregs Colitis}
+Tcells.colitis <- log_tp10k[c(grep("CXCR3", rownames(log_tp10k)), grep("CXCR6", rownames(log_tp10k)),                                                                    grep("CCR6", rownames(log_tp10k)), grep("^FAS$", rownames(log_tp10k)), grep("TBX21", rownames(log_tp10k)), 
+                              grep("IL10$", rownames(log_tp10k)), grep("IFIT1$", rownames(log_tp10k)), grep("IFIT3", rownames(log_tp10k)),
+                              grep("IFI6", rownames(log_tp10k))), ]
+
+colnames(Tcells.colitis) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+colitis <- Heatmap(Tcells.colitis, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis
+
+
+### z-score
+Tcells.colitis.zscore <- t(scale(t(Tcells.colitis)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+colitis.zscore <- Heatmap(Tcells.colitis.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis.zscore
+```
+
+```{r CCR6 Tregs regulation}
+Tcells.regulation <- log_tp10k[c("ENTPD1", "NT5E", "IL22", "AREG", "TGFB1", "IL26"), ]
+
+colnames(Tcells.regulation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+regulation <- Heatmap(Tcells.regulation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation
+
+
+### z-score
+Tcells.regulation.zscore <- t(scale(t(Tcells.regulation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+regulation.zscore <- Heatmap(Tcells.regulation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in CCR6+ Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation.zscore
+```
+
+## Effector Tregs
+
+```{r Effector Tregs}
+Tcells.Effector.Treg <- subset(Tcells, idents = 'Effector Treg')
+
+Tcells.Effector.Treg <- AggregateExpression(Tcells.Effector.Treg, assays = "RNA", return.seurat = F, group.by = c("tp"))
+
+head(Tcells.Effector.Treg$RNA)
+
+# counts -> TP10K
+tp10k <- t(t(as.matrix(Tcells.Effector.Treg$RNA)) / colSums(as.matrix(Tcells.Effector.Treg$RNA)))*10000
+
+#log2 transform 
+log_tp10k <- log2(tp10k + 1) 
+
+Tcells.cyto <- log_tp10k[c("TNF", "IL6", "IFNG", "LTB", "IRF4", "IL17A", "GZMB", "PRF1"), ]
+
+colnames(Tcells.cyto) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Cytokines <- Heatmap(Tcells.cyto, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Effector Treg", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines
+
+
+### z-score
+Tcells.cyto.zscore <- t(scale(t(Tcells.cyto)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Cytokines.zscore <- Heatmap(Tcells.cyto.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of cytokines in Effector Treg", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Cytokines.zscore
+```
+
+```{r Effector Tregs Activation}
+Tcells.activation <- log_tp10k[c("CD69", "HLA-DRB1", "CD38", "MKI67", "EOMES", "CRTAM"), ]
+
+colnames(Tcells.activation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+Activation <- Heatmap(Tcells.activation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation
+
+
+### z-score
+Tcells.activation.zscore <- t(scale(t(Tcells.activation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+Activation.zscore <- Heatmap(Tcells.activation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of activation markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+Activation.zscore
+```
+
+```{r Effector Tregs Colitis}
+Tcells.colitis <- log_tp10k[c(grep("CXCR3", rownames(log_tp10k)), grep("CXCR6", rownames(log_tp10k)),                                                                    grep("CCR6", rownames(log_tp10k)), grep("^FAS$", rownames(log_tp10k)), grep("TBX21", rownames(log_tp10k)), 
+                              grep("IL10$", rownames(log_tp10k)), grep("IFIT1$", rownames(log_tp10k)), grep("IFIT3", rownames(log_tp10k)),
+                              grep("IFI6", rownames(log_tp10k))), ]
+
+colnames(Tcells.colitis) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+colitis <- Heatmap(Tcells.colitis, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis
+
+
+### z-score
+Tcells.colitis.zscore <- t(scale(t(Tcells.colitis)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+colitis.zscore <- Heatmap(Tcells.colitis.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of colitis markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+colitis.zscore
+```
+
+```{r Effector Tregs Regulation}
+Tcells.regulation <- log_tp10k[c("ENTPD1", "NT5E", "IL22", "AREG", "TGFB1", "IL26"), ]
+
+colnames(Tcells.regulation) <- c("Pre-B", "Post-B", "Pre-CART", "D10", "Mo1", "Mo5", "Mo8", "Mo10", "1Y")
+
+Heatmap.cols <- colorRamp2(c(0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75), viridis(n = 12))
+regulation <- Heatmap(Tcells.regulation, name = "Gene expression \n(Log-transformed normalized expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation
+
+
+### z-score
+Tcells.regulation.zscore <- t(scale(t(Tcells.regulation)))
+
+Heatmap.cols <- colorRamp2(c(-1.5,-1.25,-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1,1.25,1.5,1.75,2), viridis(n = 15))
+regulation.zscore <- Heatmap(Tcells.regulation.zscore, name = "Gene expression \n(z-score of gene expression)", col = Heatmap.cols, 
+        cluster_columns = F, cluster_rows = F, column_title = "Expression of regulation markers in Effector Tregs", row_title_rot = 0, 
+        row_names_side = "left", column_names_rot = 45)
+
+regulation.zscore
+```

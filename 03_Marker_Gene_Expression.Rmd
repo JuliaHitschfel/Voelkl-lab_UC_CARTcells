@@ -1,0 +1,130 @@
+---
+title: "03_Marker_Genes_Cell_Types"
+author: "Julia Hitschfel"
+date: "2026-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(RColorBrewer)
+```
+
+# Marker Gene Expression
+
+```{r Marker Gene Expression}
+scobject_int_reg <- readRDS(file = "integrated_seurat_cellcycle_regression_CU1_1year_res04_annotated.rds")
+
+DefaultAssay(scobject_int_reg) <- "SCT"
+```
+
+## T cell marker genes
+
+```{r T cells}
+VlnPlot(scobject_int_reg, features = "CD3D")
+VlnPlot(scobject_int_reg, features = "CD3E")
+VlnPlot(scobject_int_reg, features = "CD8A")
+VlnPlot(scobject_int_reg, features = "CD8B")
+VlnPlot(scobject_int_reg, features = "CD4")
+VlnPlot(scobject_int_reg, features = "PTPRC")
+```
+The annotated T cell clusters express CD3D and CD3E. In addition, one of the clusters shows strong expression of CD8A and CD8B, suggesting it mostly contains CD8+ T cells. The other T cell cluster shows a weak expression of CD4 and absence of CD8A and CD8B transcripts, suggesting it is mostly CD4+ helper T cells. One of the myeloid cell clusters also shows weak expression of CD4. 
+PTPRC (CD45) is expressed in both T cell clusters, in myeloid cell clusters, and in the mast cell cluster. In addition, there is another cluster with expression of PTPRC, but not readily identifiable based on other immune cell markers. 
+
+## B cell marker genes
+
+```{r B cells}
+VlnPlot(scobject_int_reg, features = "CD19")
+VlnPlot(scobject_int_reg, features = "MS4A1")
+VlnPlot(scobject_int_reg, features = "MZB1")
+VlnPlot(scobject_int_reg, features = "JCHAIN")
+```
+Cells within the annotated B cell cluster express JCHAIN and MZB1, which confirms their B cell identity. However, also in the Epithelial cells_2 cluster, there are a few cells expressing JCHAIN and MZB1, suggesting this cluster is potentially mixed with B cells. Further, there are a few cells in one of the myeloid cell clusters and in the CD45+ immune cell cluster that express JCHAIN. This could also be B cells that fell into these clusters based on similarity in antigen-presentation related gene expression. 
+CD19 and MS4A1 (CD20) show a generally weak expression, but are detectable in the proliferating epithelial cells and myeloid cell (DCs) cluster, which suggests that these annotations are not yet ideal. 
+
+## Myeloid cells
+
+```{r Myeloid}
+VlnPlot(scobject_int_reg, features = "CD14")
+VlnPlot(scobject_int_reg, features = "FCGR3A")
+VlnPlot(scobject_int_reg, features = "CD80")
+VlnPlot(scobject_int_reg, features = "HLA-DPB1")
+VlnPlot(scobject_int_reg, features = "ITGAX")
+VlnPlot(scobject_int_reg, features = "IFI30")
+```
+Expression of marker genes for myeloid cells is mostly restricted to the myeloid cell clusters. Mostly on the first myeloid cells (Macs) cluster. HLA class II molecules are strongly expressed in both myeloid cell clusters, but also to some extent on the neuronal cells and some epithelial cells. 
+
+## Connective tissue marker genes
+
+```{r Fibroblasts and SMCs}
+VlnPlot(scobject_int_reg, features = "COL3A1")
+VlnPlot(scobject_int_reg, features = "COL6A2")
+VlnPlot(scobject_int_reg, features = "MMP2")
+VlnPlot(scobject_int_reg, features = "CXCL14")
+VlnPlot(scobject_int_reg, features = "ACTA2")
+```
+Fibroblasts and Smooth Muscle cells are easily identifiable based on the elevated expression of ACTA2 in SMCs, and increased expression of collagens, MMP2, and CXCL14 in fibroblasts. 
+
+## Endothelial cells
+
+```{r Endothelial}
+VlnPlot(scobject_int_reg, features = "PLVAP")
+VlnPlot(scobject_int_reg, features = "SPARCL1")
+VlnPlot(scobject_int_reg, features = "PECAM1")
+```
+
+Endothelial cells are also readily identifiable based on the established marker genes. 
+
+## Epithelial cells 
+
+```{r Epithelial}
+VlnPlot(scobject_int_reg, features = "KRT8")
+VlnPlot(scobject_int_reg, features = "KRT18")
+VlnPlot(scobject_int_reg, features = "EPCAM")
+
+#Earlier differentiation
+VlnPlot(scobject_int_reg, features = "LGR5")
+VlnPlot(scobject_int_reg, features = "OLFM4")
+VlnPlot(scobject_int_reg, features = "TYMS")
+
+#Other Epithelial
+VlnPlot(scobject_int_reg, features = "GPX2")
+VlnPlot(scobject_int_reg, features = "AGR2")
+VlnPlot(scobject_int_reg, features = "LGALS4")
+VlnPlot(scobject_int_reg, features = "PIGR")
+
+```
+The identitiy of epithelial cells is confirmed via expression of KRT8, KRT18 and EPCAM. 
+AGR2 is known to have a higher expression in intestinal goblet cells, suggesting that Epithelial cells_1 and Secretory Epithelial cells might be Goblet cells. Galectin-4 (LGALS4) has the highest expression in differentiated Enterocytes, but is also expressed in Goblet cells. Potentially, this means that the cluster Epithelial cells (early differentiated) are more differentiated Enterocytes. 
+Epithelial cell subpopulations will later be assessed in a subclusterring analysis with more marker genes. 
+
+## Granulocytes/Mast cells
+
+```{r mast cells}
+VlnPlot(scobject_int_reg, features = "TPSB2")
+VlnPlot(scobject_int_reg, features = "TPSAB1")
+VlnPlot(scobject_int_reg, features = "CPA3")
+VlnPlot(scobject_int_reg, features = "KIT")
+```
+Marker genes for mast cells are strongly expressed in the annotated mast cell cluster. However, there is also some expression of mast cell marker genes in the Epithelial_3 cluster, perhaps suggesting that this is a mixed cell cluster. 
+
+## Neurons
+
+```{r neurons}
+VlnPlot(scobject_int_reg, features = "CRYAB")
+VlnPlot(scobject_int_reg, features = "NRXN1")
+```
+
+Neuronal cells are also readily identifiable based on their marker gene expression. Most likely these are glial cells. 
+
+## Overview cell count per sequencing timepoint 
+
+```{r Zellzahlen}
+table(scobject_int_reg@meta.data$tp)
+
+```
