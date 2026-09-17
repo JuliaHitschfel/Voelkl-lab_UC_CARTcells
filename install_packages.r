@@ -1,0 +1,3 @@
+install.packages(c("dplyr", "tidyr", "ggplot2", "Seurat", "SeuratObject", "BPCells", "presto", "glmGamPoi", "hdf5r", "SingleCellExperiment", 
+			"scDblFinder", "scRepertoire", "RcolorBrewer", "colorspace", "SingleR", "celldex", "knitr", "pheatmap", "ComplexHeatmap", "viridis",
+			"DESeq2", "clusterProfiler", "tidyverse", "msigdbr", "ggforce", "ggrepel", "tidytext", "plotly", "circlize", "ggpubr", "rstatix")  
