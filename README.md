@@ -9,4 +9,6 @@ Lastly, the scripts examine gene expression changes in different cell population
 ## Requirements 
 The code was run in R Studio (v2025.09.1) using R (v 4.5.1). 
 Necessary R Studio packages to run the analysis can be installed by running the install_packages.r script. 
-Data to repeat the analysis is archived at a controlled-access repository and can be made available upon request. 
+Raw sequencing data to repeat the analysis from scratch is archived at the European Genome-Phenome Archive under controlled-access and can be made available there upon request. 
+Count matrices in HDF5 File format to run the analysis that was done in the scripts are available through ArrayExpress. 
+No non-standard hardware is needed to execute the code. Package install time is negligible. 
